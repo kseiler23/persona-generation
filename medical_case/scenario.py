@@ -31,13 +31,13 @@ class MedicalCase:
     patient_name: str
     patient_age: int
     patient_sex: str
-    patient_occupation: Optional[str] = None
     presenting_complaint: str
     onset: str
     duration: str
     character: str
     location: str
     radiation: str
+    patient_occupation: Optional[str] = None
     alleviating_factors: List[str] = field(default_factory=list)
     aggravating_factors: List[str] = field(default_factory=list)
     associated_symptoms: List[str] = field(default_factory=list)
@@ -114,6 +114,7 @@ def load_case_file(case_path: Path) -> MedicalCase:
         patient_name=raw["patient_name"],
         patient_age=raw["patient_age"],
         patient_sex=raw["patient_sex"],
+        patient_occupation=raw.get("patient_occupation"),
         presenting_complaint=raw["presenting_complaint"],
         onset=raw.get("onset", ""),
         duration=raw.get("duration", ""),

@@ -303,6 +303,13 @@ def persona_style_instructions(profile: PersonaProfile) -> str:
             parts.append(f"{k}: {v}")
     if parts:
         lines.append("Communication style: " + "; ".join(parts))
+    # Style cues beyond core style: quirks and characteristic phrasing (no personal facts)
+    if profile.quirks:
+        lines.append("Stylistic quirks to emulate (use naturally and sparingly): " + "; ".join(profile.quirks[:5]))
+    if profile.catchphrases:
+        lines.append(
+            "If it fits, lightly echo characteristic phrasing (paraphrased, not verbatim; do not reveal identity)."
+        )
     lines.append(
         "Style-only mode: Do not transfer any personal facts, preferences, or private details from the persona."
     )
