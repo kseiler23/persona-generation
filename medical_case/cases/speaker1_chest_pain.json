@@ -1,0 +1,64 @@
+{
+  "title": "Chest pain in clinic (Speaker_1 style)",
+  "persona_file": "/Users/apple/Desktop/Persona Generation/data/personas/Speaker_1.json",
+  "patient_name": "Kirk",
+  "patient_age": 45,
+  "patient_sex": "male",
+  "presenting_complaint": "Chest pain",
+  "onset": "Started 2 hours ago at rest",
+  "duration": "Intermittent episodes, each ~10 minutes",
+  "character": "Pressure-like tightness, heavy",
+  "location": "Central chest, retrosternal",
+  "radiation": "Sometimes to left arm and jaw",
+  "alleviating_factors": [
+    "Sitting still",
+    "Resting"
+  ],
+  "aggravating_factors": [
+    "Walking upstairs",
+    "Stress"
+  ],
+  "associated_symptoms": [
+    "Mild shortness of breath",
+    "Nausea",
+    "Lightheadedness"
+  ],
+  "red_flags": [
+    "Exertional chest pain",
+    "Radiation to arm/jaw",
+    "Nausea/diaphoresis"
+  ],
+  "past_medical_history": [
+    "Borderline high cholesterol"
+  ],
+  "medications": [
+    "Multivitamin daily"
+  ],
+  "allergies": [
+    "No known drug allergies"
+  ],
+  "social_history": {
+    "smoking": "Occasional cigar (1-2/month)",
+    "alcohol": "Social",
+    "exercise": "Irregular"
+  },
+  "family_history": [
+    "Father had MI at 54"
+  ],
+  "vitals": {
+    "heart_rate_bpm": 96,
+    "blood_pressure_systolic": 148,
+    "blood_pressure_diastolic": 92,
+    "respiratory_rate": 18,
+    "temperature_c": 37.1,
+    "spo2_percent": 97
+  },
+  "withheld_facts": [
+    "Took sildenafil earlier today for erectile dysfunction.",
+    "Chest pain began after a heated argument at work.",
+    "Occasional episodes over the last 2 weeks but shorter.",
+    "Stopped a prescribed statin 6 months ago due to muscle aches."
+  ],
+  "triage": "urgent",
+  "doctor_opening_prompt": "You are a doctor. Take a focused chest pain history including risk factors and red flags."
+}

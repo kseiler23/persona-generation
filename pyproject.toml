@@ -1,0 +1,46 @@
+[project]
+name = "persona-generation"
+version = "0.1.0"
+description = "Transcript enrichment and a Litellm-based persona agent (no audio/video)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "litellm>=1.40.0",
+  "typer>=0.12.3",
+  "rich>=13.7.0",
+  "textblob>=0.17.1",
+  "tiktoken>=0.5.2",
+  "pydantic>=2.5.2",
+  "pandas>=2.0.3",
+  "python-dotenv>=1.0.0",
+  "tqdm>=4.66.1",
+]
+
+[project.scripts]
+persona-gen = "persona_agent.cli:app"
+med-case = "medical_case.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# uv-specific settings are generally not required; uv reads pyproject by default.
+# You can still use:
+#   uv venv
+#   uv sync
+#   uv run persona-gen ...
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["persona_agent"]
+
+[tool.hatch.build.targets.editable]
+packages = ["persona_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "persona_agent",
+  "README.md",
+  "pyproject.toml",
+]
+
