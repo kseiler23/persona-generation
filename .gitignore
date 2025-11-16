@@ -26,7 +26,7 @@ Thumbs.db
 data/temp/
 *.log
 
-# Node Modules
-node_modules/
+# Frontend Node Modules
+frontend/node_modules/
 
 
