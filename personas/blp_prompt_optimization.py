@@ -84,6 +84,11 @@ class DSPyBLPExtractor(dspy.Module):
         return pred.blp_json
 
 
+# --- Cancellation ---------------------------------------------------------------
+class OptimizationCancelled(Exception):
+    pass
+
+
 # --- Data container for optimization ------------------------------------------
 
 
@@ -169,6 +174,7 @@ def make_metric(
     w_persona: float = 1.0,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     total_budget: Optional[int] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Callable[[dspy.Example, dspy.Prediction, dspy.Trace], float]:
     """
     Wrap the critique-based reward into a DSPy metric function.
@@ -189,6 +195,16 @@ def make_metric(
         pred_name=None,
         pred_trace=None,
     ) -> float:  # type: ignore[override]
+        # Check cooperative cancellation before doing any heavy work
+        if should_cancel is not None:
+            try:
+                if should_cancel():
+                    raise OptimizationCancelled("GEPA optimization cancelled by user")
+            except OptimizationCancelled:
+                raise
+            except Exception:
+                # If the predicate itself fails, treat as cancelled to be safe.
+                raise OptimizationCancelled("GEPA optimization cancelled")
         # DSPy passes the fields from the signature; we need to know which
         # BLPLearningExample this corresponds to. We stash its index in the
         # example metadata.
@@ -305,6 +321,8 @@ def optimize_blp_prompt(
     track_stats: bool = True,
     output_path: Path | None = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+    skip_configure: bool = False,
 ) -> DSPyBLPExtractor:
     """
     Run a DSPy GEPA loop to improve the BLP extraction prompt.
@@ -315,7 +333,12 @@ def optimize_blp_prompt(
     - `output_path`: optional path to save the resulting prompt/program
     """
 
-    configure_dspy(model_name)
+    if not skip_configure:
+        try:
+            configure_dspy(model_name)
+        except Exception:
+            # If DSPy settings were configured by another thread, ignore reconfigure errors.
+            pass
 
     # Configure reflection LM for GEPA (required by DSPy).
     try:
@@ -365,6 +388,7 @@ def optimize_blp_prompt(
         w_persona=w_persona,
         progress_callback=progress_callback,
         total_budget=max_metric_calls,
+        should_cancel=should_cancel,
     )
 
     # GEPA reflective optimizer (no demos; edits instruction text of the predictor)

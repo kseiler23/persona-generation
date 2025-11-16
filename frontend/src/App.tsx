@@ -49,7 +49,9 @@ const App: React.FC = () => {
   const [patientObj, setPatientObj] = useState<PatientProfile | null>(null);
 
   const [busyBLP, setBusyBLP] = useState(false);
+  const [blpAbortController, setBlpAbortController] = useState<AbortController | null>(null);
   const [busyProfile, setBusyProfile] = useState(false);
+  const [patientAbortController, setPatientAbortController] = useState<AbortController | null>(null);
   const [busyTurn, setBusyTurn] = useState(false);
   const [busyCritique, setBusyCritique] = useState(false);
   const [busyOptimize, setBusyOptimize] = useState(false);
@@ -63,16 +65,38 @@ const App: React.FC = () => {
   const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
   const [busyReset, setBusyReset] = useState(false);
 
+  // Frontend-adjustable models and token budgets
+  const [blpModel, setBlpModel] = useState("gpt-4.1-mini");
+  const [blpMaxTokens, setBlpMaxTokens] = useState<number>(2048);
+  const [patientModel, setPatientModel] = useState("gpt-4.1-mini");
+  const [patientMaxTokens, setPatientMaxTokens] = useState<number>(1024);
+  const [critiqueModel, setCritiqueModel] = useState("gpt-4.1-mini");
+  const [critiqueMaxTokens, setCritiqueMaxTokens] = useState<number>(2048);
+  // GEPA knobs
+  const [gepaModel, setGepaModel] = useState("gpt-4.1-mini");
+  const [gepaReflectionMinibatchSize, setGepaReflectionMinibatchSize] = useState<number>(1);
+  const [gepaCandidateSelection, setGepaCandidateSelection] = useState("pareto");
+  const [gepaMaxMetricCalls, setGepaMaxMetricCalls] = useState<number>(5);
+  const [gepaUseMerge, setGepaUseMerge] = useState<boolean>(false);
+  const [gepaTrackStats, setGepaTrackStats] = useState<boolean>(true);
+
   const handleExtractBLP = async () => {
     if (!rawTranscript.trim()) return;
     setBusyBLP(true);
     setError(null);
+    const controller = new AbortController();
+    setBlpAbortController(controller);
 
     try {
       const res = await fetch(`${API_BASE}/api/blp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: rawTranscript }),
+        body: JSON.stringify({
+          transcript: rawTranscript,
+          model: blpModel,
+          max_tokens: blpMaxTokens,
+        }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -88,11 +112,27 @@ const App: React.FC = () => {
       setBlpObj(data.blp);
       setBlpReady(true);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setError(null);
+        return;
+      }
       setError(
         e instanceof Error ? e.message : "Failed to extract BLP from backend.",
       );
     } finally {
       setBusyBLP(false);
+      setBlpAbortController(null);
+    }
+  };
+
+  const handleCancelBLP = () => {
+    try {
+      blpAbortController?.abort();
+    } catch {
+      // ignore
+    } finally {
+      setBusyBLP(false);
+      setBlpAbortController(null);
     }
   };
 
@@ -120,6 +160,13 @@ const App: React.FC = () => {
           role: m.role,
           content: m.content,
         })),
+        // GEPA knobs from UI
+        reflection_minibatch_size: gepaReflectionMinibatchSize,
+        candidate_selection_strategy: gepaCandidateSelection,
+        max_metric_calls: gepaMaxMetricCalls,
+        use_merge: gepaUseMerge,
+        track_stats: gepaTrackStats,
+        model: gepaModel,
       };
       const res = await fetch(`${API_BASE}/api/optimize/blp-prompt/start`, {
         method: "POST",
@@ -159,6 +206,13 @@ const App: React.FC = () => {
           } = await pRes.json();
           setOptimizeStatus(pData.status);
           setOptimizePercent(pData.percent ?? 0);
+          if (pData.status === "cancelled" || pData.status === "cancelling") {
+            window.clearInterval(id);
+            setOptimizeTimer(null);
+            setBusyOptimize(false);
+            setOptimizeJobId(null);
+            return;
+          }
           if (pData.status === "complete") {
             const rRes = await fetch(
               `${API_BASE}/api/optimize/blp-prompt/result/${encodeURIComponent(
@@ -199,16 +253,46 @@ const App: React.FC = () => {
     }
   };
 
+  const handleCancelOptimize = async () => {
+    try {
+      if (optimizeTimer !== null) {
+        window.clearInterval(optimizeTimer);
+        setOptimizeTimer(null);
+      }
+      if (optimizeJobId) {
+        await fetch(
+          `${API_BASE}/api/optimize/blp-prompt/cancel/${encodeURIComponent(
+            optimizeJobId,
+          )}`,
+          { method: "POST" },
+        );
+      }
+    } catch {
+      // best-effort cancel
+    } finally {
+      setBusyOptimize(false);
+      setOptimizeJobId(null);
+      setOptimizeStatus("cancelled");
+    }
+  };
+
   const handleBuildPatientProfile = async () => {
     if (!rawCase.trim()) return;
     setBusyProfile(true);
     setError(null);
+    const controller = new AbortController();
+    setPatientAbortController(controller);
 
     try {
       const res = await fetch(`${API_BASE}/api/patient-profile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_case: rawCase }),
+        body: JSON.stringify({
+          raw_case: rawCase,
+          model: patientModel,
+          max_tokens: patientMaxTokens,
+        }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -220,6 +304,10 @@ const App: React.FC = () => {
       setPatientObj(data.patient_profile);
       setPatientReady(true);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setError(null);
+        return;
+      }
       setError(
         e instanceof Error
           ? e.message
@@ -227,6 +315,18 @@ const App: React.FC = () => {
       );
     } finally {
       setBusyProfile(false);
+      setPatientAbortController(null);
+    }
+  };
+
+  const handleCancelPatientProfile = () => {
+    try {
+      patientAbortController?.abort();
+    } catch {
+      // ignore
+    } finally {
+      setBusyProfile(false);
+      setPatientAbortController(null);
     }
   };
 
@@ -351,6 +451,8 @@ const App: React.FC = () => {
           role: msg.role,
           content: msg.content,
         })),
+        model: critiqueModel,
+        max_tokens: critiqueMaxTokens,
       };
 
       const res = await fetch(`${API_BASE}/api/critique`, {
@@ -411,6 +513,33 @@ const App: React.FC = () => {
               setBlpReady(false);
             }}
           />
+          <div className="field-row">
+            <div className="field-column">
+              <label className="field-label" htmlFor="blp-model">
+                BLP model
+              </label>
+              <input
+                id="blp-model"
+                className="conversation-input"
+                placeholder="e.g. gpt-4.1-mini"
+                value={blpModel}
+                onChange={(e) => setBlpModel(e.target.value)}
+              />
+            </div>
+            <div className="field-column">
+              <label className="field-label" htmlFor="blp-max-tokens">
+                BLP max tokens
+              </label>
+              <input
+                id="blp-max-tokens"
+                type="number"
+                className="conversation-input"
+                placeholder="2048"
+                value={blpMaxTokens}
+                onChange={(e) => setBlpMaxTokens(Number(e.target.value) || 0)}
+              />
+            </div>
+          </div>
 
           <button
             className="primary-button"
@@ -419,6 +548,16 @@ const App: React.FC = () => {
           >
             {busyBLP ? "Processing..." : "Anonymize & Extract BLP"}
           </button>
+          {busyBLP && (
+            <button
+              className="secondary-button"
+              onClick={handleCancelBLP}
+              style={{ marginLeft: 8 }}
+              disabled={!blpAbortController}
+            >
+              Stop
+            </button>
+          )}
           {blpReady && (
             <span className="badge" style={{ marginLeft: 8 }}>BLP ready</span>
           )}
@@ -446,6 +585,33 @@ const App: React.FC = () => {
               setPatientReady(false);
             }}
           />
+          <div className="field-row">
+            <div className="field-column">
+              <label className="field-label" htmlFor="patient-model">
+                Patient profile model
+              </label>
+              <input
+                id="patient-model"
+                className="conversation-input"
+                placeholder="e.g. gpt-4.1-mini"
+                value={patientModel}
+                onChange={(e) => setPatientModel(e.target.value)}
+              />
+            </div>
+            <div className="field-column">
+              <label className="field-label" htmlFor="patient-max-tokens">
+                Patient profile max tokens
+              </label>
+              <input
+                id="patient-max-tokens"
+                type="number"
+                className="conversation-input"
+                placeholder="1024"
+                value={patientMaxTokens}
+                onChange={(e) => setPatientMaxTokens(Number(e.target.value) || 0)}
+              />
+            </div>
+          </div>
 
           <button
             className="primary-button"
@@ -454,6 +620,16 @@ const App: React.FC = () => {
           >
             {busyProfile ? "Structuring..." : "Structure data & build profile"}
           </button>
+          {busyProfile && (
+            <button
+              className="secondary-button"
+              onClick={handleCancelPatientProfile}
+              style={{ marginLeft: 8 }}
+              disabled={!patientAbortController}
+            >
+              Stop
+            </button>
+          )}
           {patientReady && (
             <span className="badge" style={{ marginLeft: 8 }}>Patient profile ready</span>
           )}
@@ -536,6 +712,114 @@ const App: React.FC = () => {
           </div>
 
           <div className="critique-controls">
+            <div className="field-row" style={{ marginBottom: 8 }}>
+              <div className="field-column">
+                <label className="field-label" htmlFor="gepa-model">
+                  GEPA model
+                </label>
+                <input
+                  id="gepa-model"
+                  className="conversation-input"
+                  placeholder="e.g. gpt-4.1-mini"
+                  value={gepaModel}
+                  onChange={(e) => setGepaModel(e.target.value)}
+                />
+              </div>
+              <div className="field-column">
+                <label className="field-label" htmlFor="gepa-reflection-minibatch">
+                  Reflection minibatch size
+                </label>
+                <input
+                  id="gepa-reflection-minibatch"
+                  type="number"
+                  className="conversation-input"
+                  placeholder="e.g. 3"
+                  value={gepaReflectionMinibatchSize}
+                  onChange={(e) =>
+                    setGepaReflectionMinibatchSize(Number(e.target.value) || 0)
+                  }
+                />
+              </div>
+              <div className="field-column">
+                <label className="field-label" htmlFor="gepa-max-metric-calls">
+                  Max metric calls
+                </label>
+                <input
+                  id="gepa-max-metric-calls"
+                  type="number"
+                  className="conversation-input"
+                  placeholder="e.g. 200"
+                  value={gepaMaxMetricCalls}
+                  onChange={(e) =>
+                    setGepaMaxMetricCalls(Number(e.target.value) || 0)
+                  }
+                />
+              </div>
+            </div>
+            <div className="field-row" style={{ marginBottom: 8 }}>
+              <div className="field-column">
+                <label className="field-label" htmlFor="gepa-candidate-selection">
+                  Candidate selection strategy
+                </label>
+                <input
+                  id="gepa-candidate-selection"
+                  className="conversation-input"
+                  placeholder="e.g. pareto"
+                  value={gepaCandidateSelection}
+                  onChange={(e) => setGepaCandidateSelection(e.target.value)}
+                />
+              </div>
+              <div className="field-column">
+                <span className="field-label">GEPA options</span>
+                <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={gepaUseMerge}
+                      onChange={(e) => setGepaUseMerge(e.target.checked)}
+                    />
+                    use_merge
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={gepaTrackStats}
+                      onChange={(e) => setGepaTrackStats(e.target.checked)}
+                    />
+                    track_stats
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div className="field-row" style={{ marginBottom: 8 }}>
+              <div className="field-column">
+                <label className="field-label" htmlFor="critique-model">
+                  Critique model
+                </label>
+                <input
+                  id="critique-model"
+                  className="conversation-input"
+                  placeholder="e.g. gpt-4.1-mini"
+                  value={critiqueModel}
+                  onChange={(e) => setCritiqueModel(e.target.value)}
+                />
+              </div>
+              <div className="field-column">
+                <label className="field-label" htmlFor="critique-max-tokens">
+                  Critique max tokens
+                </label>
+                <input
+                  id="critique-max-tokens"
+                  type="number"
+                  className="conversation-input"
+                  placeholder="e.g. 2048"
+                  value={critiqueMaxTokens}
+                  onChange={(e) =>
+                    setCritiqueMaxTokens(Number(e.target.value) || 0)
+                  }
+                />
+              </div>
+            </div>
             <button
               className="secondary-button"
               onClick={handleRunCritique}
@@ -551,6 +835,15 @@ const App: React.FC = () => {
             >
               {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
             </button>
+            {busyOptimize && optimizeJobId && (
+              <button
+                className="secondary-button"
+                onClick={handleCancelOptimize}
+                style={{ marginLeft: 8 }}
+              >
+                Stop Optimize
+              </button>
+            )}
             {busyOptimize && (
               <div style={{ marginTop: 8 }}>
                 <div className="progress">
@@ -604,21 +897,14 @@ const App: React.FC = () => {
               <div className="panel-output-header">
                 BLP Prompt: Original vs Optimized
               </div>
-              <div
-                className="panel-output-body"
-                style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
-              >
+              <div className="panel-output-body blp-prompt-grid">
                 <div>
                   <div className="panel-output-subheader">Original</div>
-                  <pre className="panel-pre">
-{originalPrompt ?? "—"}
-                  </pre>
+                  <pre className="panel-pre">{originalPrompt ?? "—"}</pre>
                 </div>
                 <div>
                   <div className="panel-output-subheader">Optimized</div>
-                  <pre className="panel-pre">
-{optimizedPrompt ?? "—"}
-                  </pre>
+                  <pre className="panel-pre">{optimizedPrompt ?? "—"}</pre>
                 </div>
               </div>
             </div>

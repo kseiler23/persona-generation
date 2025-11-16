@@ -123,6 +123,21 @@ body {
   outline-offset: 1px;
 }
 
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.field-column {
+  flex: 1 1 160px;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .primary-button {
   margin-top: 0.4rem;
   align-self: flex-start;
@@ -173,6 +188,41 @@ body {
   font-size: 0.82rem;
   color: #e5e7eb;
   line-height: 1.45;
+}
+
+.blp-prompt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 900px) {
+  .blp-prompt-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel-output-subheader {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9ca3af;
+  margin-bottom: 0.25rem;
+}
+
+.panel-pre {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(55, 65, 81, 0.9);
+  background: rgba(15, 23, 42, 0.95);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 18rem;
+  overflow: auto;
 }
 
 .placeholder {

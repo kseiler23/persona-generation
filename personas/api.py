@@ -26,6 +26,8 @@ from .transcript_anonymizer import TranscriptAnonymizer
 from .blp_prompt_optimization import (
     BLPLearningExample,
     optimize_blp_prompt,
+    OptimizationCancelled,
+    configure_dspy,
 )
 from .config import get_value
 
@@ -60,6 +62,7 @@ app.add_middleware(
 class BLPRequest(BaseModel):
     transcript: str
     model: str | None = None
+    max_tokens: int | None = None
 
 
 class BLPResponse(BaseModel):
@@ -70,6 +73,7 @@ class BLPResponse(BaseModel):
 class PatientProfileRequest(BaseModel):
     raw_case: str
     model: str | None = None
+    max_tokens: int | None = None
 
 
 class PatientProfileResponse(BaseModel):
@@ -110,6 +114,8 @@ class CritiqueRequest(BaseModel):
     raw_transcript: str
     raw_case: str
     conversation: List[ConversationTurn]
+    model: str | None = None
+    max_tokens: int | None = None
 
 
 class CritiqueResponse(BaseModel):
@@ -138,7 +144,10 @@ def create_blp(payload: BLPRequest) -> BLPResponse:
 
     
     anonymizer = TranscriptAnonymizer(model=payload.model or TranscriptAnonymizer.model)
-    extractor = BLPExtractor(model=payload.model or BLPExtractor.model)
+    extractor = BLPExtractor(
+        model=payload.model or BLPExtractor.model,
+        max_tokens=payload.max_tokens if payload.max_tokens is not None else BLPExtractor.max_tokens,
+    )
 
     anonymized = anonymizer.anonymize(payload.transcript)
     
@@ -157,7 +166,10 @@ def create_patient_profile(payload: PatientProfileRequest) -> PatientProfileResp
         raise HTTPException(status_code=400, detail="Raw case is empty.")
 
     
-    builder = PatientProfileBuilder(model=payload.model or PatientProfileBuilder.model)
+    builder = PatientProfileBuilder(
+        model=payload.model or PatientProfileBuilder.model,
+        max_tokens=payload.max_tokens if payload.max_tokens is not None else PatientProfileBuilder.max_tokens,
+    )
     profile = builder.build_from_case(payload.raw_case)
     return PatientProfileResponse(patient_profile=profile)
 
@@ -224,6 +236,8 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
         patient_profile=payload.patient_profile,
         raw_transcript=payload.raw_transcript,
         raw_case=payload.raw_case,
+        model=payload.model or PersonaCritiqueAgent.model,
+        max_tokens=payload.max_tokens if payload.max_tokens is not None else PersonaCritiqueAgent.max_tokens,
     )
 
     critique = agent.critique(payload.conversation)
@@ -267,6 +281,12 @@ class OptimizeProgressResponse(BaseModel):
     max_metric_calls: Optional[int] = None
     latest_score: Optional[float] = None
     best_score: Optional[float] = None
+    message: Optional[str] = None
+
+
+class OptimizeCancelResponse(BaseModel):
+    job_id: str
+    status: str
     message: Optional[str] = None
 
 
@@ -324,6 +344,11 @@ def optimize_blp_prompt_endpoint(payload: OptimizeBLPRequest) -> OptimizeBLPResp
     
     default_opt_model = get_value("gepa", "optimization_model", "gpt-4.1-mini")
     model_for_opt = payload.model or default_opt_model
+    # Preconfigure DSPy in this thread; ignore if already configured elsewhere
+    try:
+        configure_dspy(model_for_opt)
+    except Exception:
+        pass
     # Suppress library prints during GEPA runs
     _sink_out, _sink_err = io.StringIO(), io.StringIO()
     with redirect_stdout(_sink_out), redirect_stderr(_sink_err):
@@ -332,6 +357,7 @@ def optimize_blp_prompt_endpoint(payload: OptimizeBLPRequest) -> OptimizeBLPResp
             model_name=model_for_opt,
             w_clinical=0.0,
             w_persona=1.0,
+            skip_configure=True,
             **kwargs,
         )
 
@@ -376,6 +402,7 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
         "original_prompt": original_prompt,
         "result": None,
         "error": None,
+        "cancel": False,
     }
 
     example = BLPLearningExample(
@@ -406,6 +433,9 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
             _JOBS[job_id]["status"] = "running"
             default_opt_model = get_value("gepa", "optimization_model", "gpt-4.1-mini")
             model_for_opt = payload.model or default_opt_model
+            def _should_cancel() -> bool:
+                job = _JOBS.get(job_id)
+                return bool(job and job.get("cancel"))
             # Suppress library prints during GEPA runs
             _sink_out, _sink_err = io.StringIO(), io.StringIO()
             with redirect_stdout(_sink_out), redirect_stderr(_sink_err):
@@ -415,6 +445,8 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
                     w_clinical=0.0,
                     w_persona=1.0,
                     progress_callback=_progress_cb,
+                    should_cancel=_should_cancel,
+                    skip_configure=True,
                     **kwargs,
                 )
             optimized_prompt = read_prompt("blp_extraction", "system_prompt", "")
@@ -423,6 +455,9 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
                 "optimized_prompt": optimized_prompt,
             }
             _JOBS[job_id]["status"] = "complete"
+        except OptimizationCancelled:
+            _JOBS[job_id]["status"] = "cancelled"
+            _JOBS[job_id]["error"] = None
         except Exception as e:
             _JOBS[job_id]["status"] = "error"
             _JOBS[job_id]["error"] = str(e)
@@ -460,5 +495,20 @@ def optimize_blp_prompt_result(job_id: str) -> OptimizeBLPResponse:
         original_prompt=result["original_prompt"],
         optimized_prompt=result["optimized_prompt"],
     )
+
+
+@app.post("/api/optimize/blp-prompt/cancel/{job_id}", response_model=OptimizeCancelResponse)
+def optimize_blp_prompt_cancel(job_id: str) -> OptimizeCancelResponse:
+    """
+    Request cancellation of a running GEPA optimization job.
+    """
+    job = _JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    job["cancel"] = True
+    # Surface an intermediate status so the UI can show "cancelling"
+    if job.get("status") == "running":
+        job["status"] = "cancelling"
+    return OptimizeCancelResponse(job_id=job_id, status=str(job.get("status", "unknown")))
 
 
