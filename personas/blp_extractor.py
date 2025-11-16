@@ -6,9 +6,15 @@ from typing import List
 
 from .llm import chat_completion
 from .models import BehavioralLinguisticProfile
+from .prompts import read_prompt
+from .config import get_model_for_agent, get_max_tokens_for_agent
+from .json_utils import coerce_json_object
 
 
-BLP_EXTRACTION_SYSTEM_PROMPT = """
+BLP_EXTRACTION_SYSTEM_PROMPT = read_prompt(
+    "blp_extraction",
+    "system_prompt",
+    """
 You are a clinical psychologist and conversation analyst.
 
 Your task is to read an anonymized clinical interview transcript and produce a
@@ -30,7 +36,9 @@ Output:
   summary, communication_style, emotional_tone, cognitive_patterns,
   interpersonal_patterns, coping_strategies, strengths, vulnerabilities,
   risk_markers, language_signatures, evidence_quotes.
-"""
+""",
+)
+ 
 
 
 @dataclass
@@ -41,8 +49,8 @@ class BLPExtractor:
     Anonymized transcript → Behavioral & Linguistic Profile (BLP).
     """
 
-    model: str = "gpt-4.1-mini"
-    max_tokens: int = 1_024
+    model: str = get_model_for_agent("blp_extraction", "gpt-4.1-mini")
+    max_tokens: int = get_max_tokens_for_agent("blp_extraction", 2048)
 
     def extract(self, anonymized_transcript: str) -> BehavioralLinguisticProfile:
         """
@@ -51,6 +59,8 @@ class BLPExtractor:
 
         if not anonymized_transcript.strip():
             raise ValueError("Transcript is empty; cannot extract BLP.")
+
+        
 
         content = chat_completion(
             model=self.model,
@@ -71,9 +81,14 @@ class BLPExtractor:
         if not content:
             raise RuntimeError("Model returned empty content while extracting BLP.")
 
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except Exception:
+            # Be robust to minor format issues by coercing to a JSON object.
+            data = coerce_json_object(content)
+        
 
-        # The model sometimes returns string blobs instead of lists for certain fields.
+        # The model sometimes returns string blobs or dicts instead of lists for certain fields.
         # Normalize those so they always become List[str] before validation.
         list_fields: List[str] = [
             "coping_strategies",
@@ -83,16 +98,61 @@ class BLPExtractor:
             "language_signatures",
             "evidence_quotes",
         ]
-        for field in list_fields:
-            value = data.get(field)
+        def _normalize_to_str_list(value) -> List[str]:
+            if value is None:
+                return []
+            # Already a list: coerce each element to a clean string
+            if isinstance(value, list):
+                out: List[str] = []
+                for item in value:
+                    if isinstance(item, str):
+                        s = item.strip()
+                        if s:
+                            out.append(s)
+                    elif isinstance(item, dict):
+                        # Flatten dict values; ignore keys for cleanliness
+                        for v in item.values():
+                            if isinstance(v, str):
+                                s = v.strip()
+                                if s:
+                                    out.append(s)
+                            elif v is not None:
+                                out.append(str(v))
+                    elif item is not None:
+                        out.append(str(item))
+                return out
+            # Dict: flatten values (which may be lists or scalars)
+            if isinstance(value, dict):
+                out: List[str] = []
+                for v in value.values():
+                    if isinstance(v, list):
+                        for sub in v:
+                            if isinstance(sub, str):
+                                s = sub.strip()
+                                if s:
+                                    out.append(s)
+                            elif sub is not None:
+                                out.append(str(sub))
+                    elif isinstance(v, str):
+                        s = v.strip()
+                        if s:
+                            out.append(s)
+                    elif v is not None:
+                        out.append(str(v))
+                return out
+            # String: split on newlines/bullets
             if isinstance(value, str):
-                # Try to split on newlines / bullets; fall back to a single-element list.
                 lines = [
                     line.strip(" -•\t")
                     for line in value.replace("\r", "").split("\n")
                     if line.strip(" -•\t")
                 ]
-                data[field] = lines or [value.strip()]
+                return lines or [value.strip()]
+            # Fallback: best-effort stringification
+            return [str(value)]
+
+        for field in list_fields:
+            data[field] = _normalize_to_str_list(data.get(field))
 
         return BehavioralLinguisticProfile.model_validate(data)
 

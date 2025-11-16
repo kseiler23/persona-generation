@@ -11,9 +11,15 @@ from .models import (
     ConversationTurn,
     PatientProfile,
 )
+from .prompts import read_prompt
+from .config import get_model_for_agent, get_max_tokens_for_agent
+from .json_utils import coerce_json_object
 
 
-CRITIQUE_SYSTEM_PROMPT = """
+CRITIQUE_SYSTEM_PROMPT = read_prompt(
+    "critique",
+    "system_prompt",
+    """
 You are an expert clinical supervisor and conversation analyst.
 
 You evaluate simulated patient encounters used for clinician training.
@@ -73,7 +79,9 @@ General rules:
 - If information is insufficient to judge something, say so explicitly rather
   than guessing.
 - Do NOT include any commentary outside the JSON object.
-"""
+""",
+)
+ 
 
 
 @dataclass
@@ -93,8 +101,8 @@ class PersonaCritiqueAgent:
     patient_profile: PatientProfile
     raw_transcript: str
     raw_case: str
-    model: str = "gpt-4.1-mini"
-    max_tokens: int = 2_048
+    model: str = get_model_for_agent("critique", "gpt-4.1-mini")
+    max_tokens: int = get_max_tokens_for_agent("critique", 2048)
 
     def critique(self, conversation: List[ConversationTurn]) -> CritiqueResult:
         """
@@ -118,6 +126,7 @@ class PersonaCritiqueAgent:
             ensure_ascii=False,
         )
 
+        
         user_content = (
             "You are evaluating the following materials.\n\n"
             "=== Raw interview transcript (source persona) ===\n"
@@ -146,7 +155,10 @@ class PersonaCritiqueAgent:
         if not content:
             raise RuntimeError("Model returned empty content while generating critique.")
 
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = coerce_json_object(content)
         return CritiqueResult.model_validate(data)
 
 

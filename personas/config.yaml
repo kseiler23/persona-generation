@@ -1,0 +1,29 @@
+defaults:
+  model: gpt-4.1-mini
+
+agents:
+  anonymizer:
+    model: gpt-4.1-mini
+
+  blp_extraction:
+    model: gpt-4.1-mini
+    max_tokens: 10000
+
+  patient_profile:
+    model: gpt-4.1-mini
+    max_tokens: 10000
+
+  simulated_patient:
+    model: gpt-4.1-mini
+    max_tokens: 10000
+
+  critique:
+    model: gpt-4.1-mini
+    max_tokens: 10000
+
+gepa:
+  optimization_model: gpt-5
+  reflection_model: gpt-5
+  reflection_max_tokens: 32000
+
+

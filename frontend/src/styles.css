@@ -319,3 +319,26 @@ body {
 }
 
 
+.progress {
+  margin-top: 0.4rem;
+  height: 8px;
+  width: 280px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #22c55e, #14b8a6);
+  transition: width 300ms ease;
+}
+
+.progress-label {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-top: 0.25rem;
+}
+

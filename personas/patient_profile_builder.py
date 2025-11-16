@@ -6,9 +6,15 @@ from typing import List
 
 from .llm import chat_completion
 from .models import PatientProfile
+from .prompts import read_prompt, load_prompts
+from .config import get_model_for_agent, get_max_tokens_for_agent
+from .json_utils import coerce_json_object
 
 
-PATIENT_PROFILE_SYSTEM_PROMPT = """
+PATIENT_PROFILE_SYSTEM_PROMPT = read_prompt(
+    "patient_profile",
+    "system_prompt",
+    """
 You are a clinician structuring raw case material into a patient profile that
 can drive a simulated-patient agent.
 
@@ -32,7 +38,11 @@ Output:
   other_relevant_conditions, presenting_problems, history_of_present_illness,
   psychosocial_history, medical_history, risk_factors, protective_factors,
   current_functioning, goals_for_care, constraints_on_disclosure, session_context.
-"""
+""",
+)
+_pp_data = load_prompts()
+_pp_found = bool((_pp_data.get("patient_profile", {}) or {}).get("system_prompt"))
+ 
 
 
 @dataclass
@@ -43,8 +53,8 @@ class PatientProfileBuilder:
     Raw case (structured + unstructured) → structured Patient Profile.
     """
 
-    model: str = "gpt-4.1-mini"
-    max_tokens: int = 1_024
+    model: str = get_model_for_agent("patient_profile", "gpt-4.1-mini")
+    max_tokens: int = get_max_tokens_for_agent("patient_profile", 1024)
 
     def build_from_case(self, raw_case: str) -> PatientProfile:
         """
@@ -54,6 +64,7 @@ class PatientProfileBuilder:
         if not raw_case.strip():
             raise ValueError("Raw case text is empty; cannot build patient profile.")
 
+        
         content = chat_completion(
             model=self.model,
             messages=[
@@ -73,7 +84,11 @@ class PatientProfileBuilder:
         if not content:
             raise RuntimeError("Model returned empty content while building patient profile.")
 
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = coerce_json_object(content)
+        
 
         # Normalize fields so they match the PatientProfile schema even if the
         # model outputs None or string blobs instead of lists.

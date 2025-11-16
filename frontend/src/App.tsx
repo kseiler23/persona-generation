@@ -37,11 +37,11 @@ const API_BASE =
 const App: React.FC = () => {
   const [rawTranscript, setRawTranscript] = useState("");
   const [rawCase, setRawCase] = useState("");
-  const [blpPreview, setBlpPreview] = useState<string | null>(null);
-  const [patientPreview, setPatientPreview] = useState<string | null>(null);
   const [doctorInput, setDoctorInput] = useState("");
   const [conversation, setConversation] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [blpReady, setBlpReady] = useState(false);
+  const [patientReady, setPatientReady] = useState(false);
 
   const [blpObj, setBlpObj] = useState<BehavioralLinguisticProfile | null>(
     null,
@@ -52,8 +52,16 @@ const App: React.FC = () => {
   const [busyProfile, setBusyProfile] = useState(false);
   const [busyTurn, setBusyTurn] = useState(false);
   const [busyCritique, setBusyCritique] = useState(false);
+  const [busyOptimize, setBusyOptimize] = useState(false);
+  const [optimizeJobId, setOptimizeJobId] = useState<string | null>(null);
+  const [optimizePercent, setOptimizePercent] = useState<number>(0);
+  const [optimizeStatus, setOptimizeStatus] = useState<string | null>(null);
+  const [optimizeTimer, setOptimizeTimer] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [critique, setCritique] = useState<CritiqueResult | null>(null);
+  const [originalPrompt, setOriginalPrompt] = useState<string | null>(null);
+  const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
+  const [busyReset, setBusyReset] = useState(false);
 
   const handleExtractBLP = async () => {
     if (!rawTranscript.trim()) return;
@@ -78,13 +86,116 @@ const App: React.FC = () => {
       } = await res.json();
 
       setBlpObj(data.blp);
-      setBlpPreview(JSON.stringify(data.blp, null, 2));
+      setBlpReady(true);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Failed to extract BLP from backend.",
       );
     } finally {
       setBusyBLP(false);
+    }
+  };
+
+  const handleEndAndOptimize = async () => {
+    if (!rawTranscript.trim() || !rawCase.trim()) {
+      setError("Raw transcript and raw case are required to optimize.");
+      return;
+    }
+    if (conversation.length === 0) {
+      setError("Have at least one exchange before optimizing.");
+      return;
+    }
+    setBusyOptimize(true);
+    setError(null);
+    setOriginalPrompt(null);
+    setOptimizedPrompt(null);
+    setOptimizePercent(0);
+    setOptimizeStatus("queued");
+
+    try {
+      const payload = {
+        raw_transcript: rawTranscript,
+        raw_case: rawCase,
+        conversation: conversation.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+      };
+      const res = await fetch(`${API_BASE}/api/optimize/blp-prompt/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Optimize start error (${res.status}): ${text}`);
+      }
+      const data: { job_id: string } = await res.json();
+      setOptimizeJobId(data.job_id);
+      // begin polling
+      const id = window.setInterval(async () => {
+        try {
+          const pRes = await fetch(
+            `${API_BASE}/api/optimize/blp-prompt/progress/${encodeURIComponent(
+              data.job_id,
+            )}`,
+          );
+          if (!pRes.ok) {
+            if (pRes.status === 404) {
+              window.clearInterval(id);
+              setOptimizeTimer(null);
+              setBusyOptimize(false);
+              setOptimizeStatus("error");
+            }
+            return;
+          }
+          const pData: {
+            status: string;
+            percent: number;
+            metric_calls?: number | null;
+            max_metric_calls?: number | null;
+            latest_score?: number | null;
+            best_score?: number | null;
+          } = await pRes.json();
+          setOptimizeStatus(pData.status);
+          setOptimizePercent(pData.percent ?? 0);
+          if (pData.status === "complete") {
+            const rRes = await fetch(
+              `${API_BASE}/api/optimize/blp-prompt/result/${encodeURIComponent(
+                data.job_id,
+              )}`,
+            );
+            if (rRes.ok) {
+              const rData: { original_prompt: string; optimized_prompt: string } =
+                await rRes.json();
+              setOriginalPrompt(rData.original_prompt);
+              setOptimizedPrompt(rData.optimized_prompt);
+            }
+            window.clearInterval(id);
+            setOptimizeTimer(null);
+            setBusyOptimize(false);
+            setOptimizeJobId(null);
+          }
+          if (pData.status === "error") {
+            window.clearInterval(id);
+            setOptimizeTimer(null);
+            setBusyOptimize(false);
+            setOptimizeJobId(null);
+            setError("Optimization job failed. Check backend logs for details.");
+          }
+        } catch {
+          // ignore transient errors
+        }
+      }, 1000);
+      setOptimizeTimer(id);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Failed to optimize BLP prompt.",
+      );
+      setBusyOptimize(false);
+      setOptimizeJobId(null);
+    } finally {
+      // busy flag cleared on completion by poller
     }
   };
 
@@ -107,7 +218,7 @@ const App: React.FC = () => {
 
       const data: { patient_profile: PatientProfile } = await res.json();
       setPatientObj(data.patient_profile);
-      setPatientPreview(JSON.stringify(data.patient_profile, null, 2));
+      setPatientReady(true);
     } catch (e) {
       setError(
         e instanceof Error
@@ -181,6 +292,33 @@ const App: React.FC = () => {
       );
     } finally {
       setBusyTurn(false);
+    }
+  };
+
+  const handleResetChat = async () => {
+    setError(null);
+    setBusyReset(true);
+    try {
+      if (sessionId) {
+        const res = await fetch(
+          `${API_BASE}/api/simulated-patient/${encodeURIComponent(
+            sessionId,
+          )}/reset`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(`Reset error (${res.status}): ${t}`);
+        }
+      }
+      setConversation([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reset chat.");
+    } finally {
+      setBusyReset(false);
     }
   };
 
@@ -268,7 +406,10 @@ const App: React.FC = () => {
             className="field-textarea"
             placeholder="Paste the raw transcript here..."
             value={rawTranscript}
-            onChange={(e) => setRawTranscript(e.target.value)}
+            onChange={(e) => {
+              setRawTranscript(e.target.value);
+              setBlpReady(false);
+            }}
           />
 
           <button
@@ -278,18 +419,10 @@ const App: React.FC = () => {
           >
             {busyBLP ? "Processing..." : "Anonymize & Extract BLP"}
           </button>
+          {blpReady && (
+            <span className="badge" style={{ marginLeft: 8 }}>BLP ready</span>
+          )}
 
-          <div className="panel-output">
-            <div className="panel-output-header">BLP preview</div>
-            <div className="panel-output-body">
-              {blpPreview ?? (
-                <span className="placeholder">
-                  Once connected, this will show the structured Behavioral &amp;
-                  Linguistic Profile.
-                </span>
-              )}
-            </div>
-          </div>
         </section>
 
         {/* Bottom-left: Raw case → Patient profile */}
@@ -308,7 +441,10 @@ const App: React.FC = () => {
             className="field-textarea"
             placeholder="Paste the case description or structured data here..."
             value={rawCase}
-            onChange={(e) => setRawCase(e.target.value)}
+            onChange={(e) => {
+              setRawCase(e.target.value);
+              setPatientReady(false);
+            }}
           />
 
           <button
@@ -318,17 +454,10 @@ const App: React.FC = () => {
           >
             {busyProfile ? "Structuring..." : "Structure data & build profile"}
           </button>
+          {patientReady && (
+            <span className="badge" style={{ marginLeft: 8 }}>Patient profile ready</span>
+          )}
 
-          <div className="panel-output">
-            <div className="panel-output-header">Patient profile preview</div>
-            <div className="panel-output-body">
-              {patientPreview ?? (
-                <span className="placeholder">
-                  Once connected, this will show the structured Patient Profile.
-                </span>
-              )}
-            </div>
-          </div>
         </section>
 
         {/* Right: Simulated patient conversation */}
@@ -350,6 +479,14 @@ const App: React.FC = () => {
               <span className="badge badge-soft">
                 {sessionId ? "Session active" : "Awaiting profiles"}
               </span>
+              <button
+                className="secondary-button"
+                onClick={handleResetChat}
+                disabled={busyReset || busyTurn}
+                style={{ marginLeft: 12 }}
+              >
+                {busyReset ? "Resetting..." : "Reset chat"}
+              </button>
             </div>
 
             <div className="conversation-body">
@@ -406,6 +543,27 @@ const App: React.FC = () => {
             >
               {busyCritique ? "Critiquing..." : "Run critique on conversation"}
             </button>
+            <button
+              className="primary-button"
+              onClick={handleEndAndOptimize}
+              disabled={busyOptimize}
+              style={{ marginLeft: 12 }}
+            >
+              {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
+            </button>
+            {busyOptimize && (
+              <div style={{ marginTop: 8 }}>
+                <div className="progress">
+                  <div
+                    className="progress-bar"
+                    style={{ width: `${optimizePercent}%` }}
+                  />
+                </div>
+                <div className="progress-label">
+                  {optimizeStatus ?? "running"} · {optimizePercent}%
+                </div>
+              </div>
+            )}
           </div>
 
           {critique && (
@@ -438,6 +596,30 @@ const App: React.FC = () => {
                     </ul>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+          {(originalPrompt || optimizedPrompt) && (
+            <div className="panel-output">
+              <div className="panel-output-header">
+                BLP Prompt: Original vs Optimized
+              </div>
+              <div
+                className="panel-output-body"
+                style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
+              >
+                <div>
+                  <div className="panel-output-subheader">Original</div>
+                  <pre className="panel-pre">
+{originalPrompt ?? "—"}
+                  </pre>
+                </div>
+                <div>
+                  <div className="panel-output-subheader">Optimized</div>
+                  <pre className="panel-pre">
+{optimizedPrompt ?? "—"}
+                  </pre>
+                </div>
               </div>
             </div>
           )}

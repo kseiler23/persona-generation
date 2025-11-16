@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .llm import chat_completion
+from .config import get_model_for_agent
 
 
 ANONYMIZATION_SYSTEM_PROMPT = """
@@ -32,7 +33,7 @@ class TranscriptAnonymizer:
     Raw interview transcript → anonymized transcript that is safe to feed into the BLP extractor.
     """
 
-    model: str = "gpt-4.1-mini"
+    model: str = get_model_for_agent("anonymizer", "gpt-4.1-mini")
 
     def anonymize(self, transcript: str) -> str:
         """

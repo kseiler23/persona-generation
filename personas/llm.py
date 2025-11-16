@@ -32,11 +32,16 @@ def chat_completion(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if response_format is not None:
-        # LiteLLM exposes provider-specific extras via extra_body
+        # Pass response_format both at the top-level (OpenAI) and via extra_body
+        # to maximize compatibility across providers.
+        kwargs["response_format"] = response_format
         kwargs.setdefault("extra_body", {})
         kwargs["extra_body"]["response_format"] = response_format
 
-    completion = litellm.completion(**kwargs)
+    try:
+        completion = litellm.completion(**kwargs)
+    except Exception:
+        raise
 
     # LiteLLM mirrors OpenAI's response format
     choice = completion.choices[0]
@@ -47,6 +52,7 @@ def chat_completion(
     else:
         # pydantic object with .content attribute
         content = getattr(message, "content", "")
+    
 
     return content or ""
 
