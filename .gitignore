@@ -26,4 +26,7 @@ Thumbs.db
 data/temp/
 *.log
 
+# Node Modules
+node_modules/
+
 
