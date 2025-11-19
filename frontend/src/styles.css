@@ -190,6 +190,35 @@ body {
   line-height: 1.45;
 }
 
+.extra-attributes-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.extra-attributes-list li {
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.55rem;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(55, 65, 81, 0.8);
+}
+
+.extra-attr-key {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  display: block;
+}
+
+.extra-attr-value {
+  display: block;
+  margin-top: 0.1rem;
+}
+
 .blp-prompt-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -391,4 +420,3 @@ body {
   color: #9ca3af;
   margin-top: 0.25rem;
 }
-

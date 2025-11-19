@@ -6,7 +6,10 @@ type Message = {
 };
 
 type BehavioralLinguisticProfile = Record<string, unknown>;
-type PatientProfile = Record<string, unknown>;
+type PatientProfile = {
+  extra_attributes?: Record<string, string>;
+  [key: string]: unknown;
+};
 
 type AlignmentScore = {
   score: number;
@@ -64,6 +67,9 @@ const App: React.FC = () => {
   const [originalPrompt, setOriginalPrompt] = useState<string | null>(null);
   const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
   const [busyReset, setBusyReset] = useState(false);
+  const extraAttributes = patientObj?.extra_attributes;
+  const hasExtraAttributes =
+    extraAttributes && Object.keys(extraAttributes).length > 0;
 
   // Frontend-adjustable models and token budgets
   const [blpModel, setBlpModel] = useState("gpt-4.1-mini");
@@ -634,6 +640,22 @@ const App: React.FC = () => {
             <span className="badge" style={{ marginLeft: 8 }}>Patient profile ready</span>
           )}
 
+          {hasExtraAttributes && extraAttributes && (
+            <div className="panel-output">
+              <div className="panel-output-header">Extra attributes</div>
+              <div className="panel-output-body">
+                <ul className="extra-attributes-list">
+                  {Object.entries(extraAttributes).map(([key, value]) => (
+                    <li key={key}>
+                      <span className="extra-attr-key">{key}</span>
+                      <span className="extra-attr-value">{value}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
         </section>
 
         {/* Right: Simulated patient conversation */}
@@ -916,5 +938,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
-

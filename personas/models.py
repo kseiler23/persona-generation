@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -95,6 +95,13 @@ class PatientProfile(BaseModel):
         "",
         description=(
             "Context of the current interaction (e.g., first intake, follow-up visit, crisis visit)."
+        ),
+    )
+    extra_attributes: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Miscellaneous patient attributes that do not map cleanly to the other fields. "
+            "Keys should be short snake_case descriptors, values are concise explanations."
         ),
     )
 
@@ -228,7 +235,6 @@ class CritiqueResult(BaseModel):
         default_factory=list,
         description="Optional per-turn commentary for more granular feedback.",
     )
-
 
 
 

@@ -45,16 +45,17 @@ class SimulatedPatientAgent:
         and safety / jailbreak guardrails.
         """
 
-        header_text = read_prompt(
-            "simulated_patient",
-            "header",
-            (
-                "You are a simulated patient in a clinician training exercise.\n"
-                "You must speak ONLY as the patient described below and never step out of role.\n"
-                "Your primary objective is to stay in extremely high fidelity to the behavioral & "
-                "linguistic profile and the patient profile. Do not contradict them."
-            ),
+        default_header = (
+            "You are a simulated patient in a clinician training exercise.\n"
+            "You must speak ONLY as the patient described below and never step out of role.\n"
+            "Your primary objective is to stay in extremely high fidelity to the behavioral & "
+            "linguistic profile and the patient profile. Do not contradict them."
         )
+        header_text = read_prompt("simulated_patient", "header", "").strip()
+        if not header_text:
+            header_text = read_prompt("simulated_patient", "system_prompt", default_header).strip()
+        if not header_text:
+            header_text = default_header
         rules_text = read_prompt(
             "simulated_patient",
             "simulation_rules",
@@ -124,5 +125,4 @@ class SimulatedPatientAgent:
         self._history.append({"role": "assistant", "content": content})
 
         return content
-
 

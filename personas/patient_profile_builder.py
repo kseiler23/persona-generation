@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import List
+from typing import Any, Dict, List
 
 from .llm import chat_completion
 from .models import PatientProfile
@@ -127,6 +127,78 @@ class PatientProfileBuilder:
                 ]
                 data[field] = lines
 
+        def _coerce_to_text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+            if isinstance(value, list):
+                parts = [_coerce_to_text(item) for item in value]
+                parts = [part for part in parts if part]
+                return "; ".join(parts)
+            if isinstance(value, dict):
+                parts = []
+                for k, v in value.items():
+                    text = _coerce_to_text(v)
+                    if not text:
+                        continue
+                    key = str(k).strip()
+                    parts.append(f"{key}: {text}" if key else text)
+                return "; ".join(parts)
+            return str(value).strip()
+
+        def _record_extra(key: Any, value: Any, extra: Dict[str, str]) -> None:
+            key_str = str(key).strip() if key is not None else ""
+            text = _coerce_to_text(value)
+            if not text:
+                return
+            if not key_str:
+                key_str = "note"
+            if key_str in extra:
+                existing = extra[key_str]
+                if text in existing:
+                    return
+                extra[key_str] = f"{existing}; {text}"
+            else:
+                extra[key_str] = text
+
+        def _ingest_extra_container(container: Any, extra: Dict[str, str]) -> None:
+            if container is None:
+                return
+            if isinstance(container, dict):
+                for key, value in container.items():
+                    _record_extra(key, value, extra)
+                return
+            if isinstance(container, list):
+                for item in container:
+                    if isinstance(item, dict):
+                        for key, value in item.items():
+                            _record_extra(key, value, extra)
+                    else:
+                        _record_extra(None, item, extra)
+                return
+            if isinstance(container, str):
+                lines = [line.strip() for line in container.splitlines() if line.strip()]
+                for line in lines:
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        _record_extra(key, value, extra)
+                    else:
+                        _record_extra(None, line, extra)
+                return
+            _record_extra(None, container, extra)
+
+        allowed_fields = set(PatientProfile.model_fields.keys())
+        extra_attributes: Dict[str, str] = {}
+        _ingest_extra_container(data.get("extra_attributes"), extra_attributes)
+
+        for key in list(data.keys()):
+            if key in allowed_fields:
+                continue
+            _record_extra(key, data.pop(key), extra_attributes)
+
+        data["extra_attributes"] = extra_attributes
+
         return PatientProfile.model_validate(data)
-
-
