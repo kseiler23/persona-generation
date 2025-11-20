@@ -72,14 +72,14 @@ const App: React.FC = () => {
     extraAttributes && Object.keys(extraAttributes).length > 0;
 
   // Frontend-adjustable models and token budgets
-  const [blpModel, setBlpModel] = useState("gpt-4.1-mini");
+  const [blpModel, setBlpModel] = useState("gpt-5.1");
   const [blpMaxTokens, setBlpMaxTokens] = useState<number>(2048);
-  const [patientModel, setPatientModel] = useState("gpt-4.1-mini");
+  const [patientModel, setPatientModel] = useState("gpt-5.1");
   const [patientMaxTokens, setPatientMaxTokens] = useState<number>(1024);
-  const [critiqueModel, setCritiqueModel] = useState("gpt-4.1-mini");
+  const [critiqueModel, setCritiqueModel] = useState("gpt-5.1");
   const [critiqueMaxTokens, setCritiqueMaxTokens] = useState<number>(2048);
   // GEPA knobs
-  const [gepaModel, setGepaModel] = useState("gpt-4.1-mini");
+  const [gepaModel, setGepaModel] = useState("gpt-5.1");
   const [gepaReflectionMinibatchSize, setGepaReflectionMinibatchSize] = useState<number>(1);
   const [gepaCandidateSelection, setGepaCandidateSelection] = useState("pareto");
   const [gepaMaxMetricCalls, setGepaMaxMetricCalls] = useState<number>(5);

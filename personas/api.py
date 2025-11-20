@@ -75,6 +75,7 @@ class PatientProfileRequest(BaseModel):
     raw_case: str
     model: str | None = None
     max_tokens: int | None = None
+    review_passes: int | None = None
 
 
 class PatientProfileResponse(BaseModel):
@@ -171,10 +172,17 @@ def create_patient_profile(payload: PatientProfileRequest) -> PatientProfileResp
         raise HTTPException(status_code=400, detail="Raw case is empty.")
 
     
+    review_passes = (
+        int(payload.review_passes)
+        if payload.review_passes is not None
+        else PatientProfileBuilder.review_passes
+    )
+
     try:
         builder = PatientProfileBuilder(
             model=payload.model or PatientProfileBuilder.model,
             max_tokens=payload.max_tokens if payload.max_tokens is not None else PatientProfileBuilder.max_tokens,
+            review_passes=review_passes,
         )
         profile = builder.build_from_case(payload.raw_case)
     except HTTPException:

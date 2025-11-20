@@ -42,7 +42,36 @@ Output:
 )
 _pp_data = load_prompts()
 _pp_found = bool((_pp_data.get("patient_profile", {}) or {}).get("system_prompt"))
- 
+
+PATIENT_PROFILE_REVIEW_PROMPT = read_prompt(
+    "patient_profile",
+    "review_prompt",
+    """
+You are auditing a Patient Profile to catch missing or under-specified details.
+
+You will be given:
+- The raw clinical case text.
+- The current Patient Profile as JSON.
+
+Identify concrete facts from the raw case that are absent or too thin in the current profile. Think especially about:
+- Presenting problems, diagnoses, comorbidities, medications, substance use.
+- Course/timeline details (onset, duration, recent changes).
+- Psychosocial context (housing, work/school, legal issues, relationships, finances).
+- Risks and safety factors (self-harm, violence, medical red flags).
+- Barriers/constraints (access, disclosure hesitations, adherence issues).
+- Functional impact (sleep, appetite, energy, cognition, pain, mobility).
+- Protective factors and strengths.
+
+Output:
+- Return ONLY the additions/clarifications as a JSON object with Patient Profile keys.
+- Do NOT delete or rewrite existing content; only add missing details.
+- For lists, include only new items not already covered.
+- For strings, provide concise additions (not full rewrites). Leave out keys that do not need changes.
+- Put any details that do not fit a named field into `extra_attributes` as { key: value } entries with short snake_case keys.
+- Return {} if there is nothing to add.
+""",
+)
+
 
 
 @dataclass
@@ -53,8 +82,9 @@ class PatientProfileBuilder:
     Raw case (structured + unstructured) → structured Patient Profile.
     """
 
-    model: str = get_model_for_agent("patient_profile", "gpt-4.1-mini")
+    model: str = get_model_for_agent("patient_profile", "gpt-5.1")
     max_tokens: int = get_max_tokens_for_agent("patient_profile", 1024)
+    review_passes: int = 1
 
     def build_from_case(self, raw_case: str) -> PatientProfile:
         """
@@ -64,47 +94,16 @@ class PatientProfileBuilder:
         if not raw_case.strip():
             raise ValueError("Raw case text is empty; cannot build patient profile.")
 
-        
-        content = chat_completion(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": PATIENT_PROFILE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "Here is the raw case description. "
-                        "Return ONLY a JSON object with the requested fields.\n\n"
-                        f"{raw_case}"
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=self.max_tokens,
-        )
-        if not content:
-            raise RuntimeError("Model returned empty content while building patient profile.")
-
-        try:
-            data = json.loads(content)
-        except Exception:
-            data = coerce_json_object(content)
-        
-
-        # Normalize fields so they match the PatientProfile schema even if the
-        # model outputs None or string blobs instead of lists.
         string_fields: List[str] = [
             "history_of_present_illness",
             "psychosocial_history",
             "medical_history",
             "current_functioning",
             "session_context",
+            "label",
+            "gender_identity",
+            "cultural_context",
         ]
-        for field in string_fields:
-            value = data.get(field, "")
-            if value is None:
-                data[field] = ""
-            elif not isinstance(value, str):
-                data[field] = str(value)
 
         list_fields: List[str] = [
             "primary_diagnoses",
@@ -114,18 +113,9 @@ class PatientProfileBuilder:
             "protective_factors",
             "goals_for_care",
             "constraints_on_disclosure",
+            "medications",
+            "substance_use",
         ]
-        for field in list_fields:
-            value = data.get(field)
-            if value is None:
-                data[field] = []
-            elif isinstance(value, str):
-                lines = [
-                    line.strip(" -•\t")
-                    for line in value.replace("\r", "").split("\n")
-                    if line.strip(" -•\t")
-                ]
-                data[field] = lines
 
         def _coerce_to_text(value: Any) -> str:
             if value is None:
@@ -190,15 +180,177 @@ class PatientProfileBuilder:
                 return
             _record_extra(None, container, extra)
 
-        allowed_fields = set(PatientProfile.model_fields.keys())
-        extra_attributes: Dict[str, str] = {}
-        _ingest_extra_container(data.get("extra_attributes"), extra_attributes)
+        def _normalize_profile_data(raw: Dict[str, Any]) -> Dict[str, Any]:
+            """
+            Normalize raw model output into a dict ready for PatientProfile validation.
+            """
+            data = dict(raw) if raw is not None else {}
 
-        for key in list(data.keys()):
-            if key in allowed_fields:
-                continue
-            _record_extra(key, data.pop(key), extra_attributes)
+            for field in string_fields:
+                value = data.get(field, "")
+                if value is None:
+                    data[field] = ""
+                elif not isinstance(value, str):
+                    data[field] = str(value)
 
-        data["extra_attributes"] = extra_attributes
+            for field in list_fields:
+                value = data.get(field)
+                if value is None:
+                    data[field] = []
+                elif isinstance(value, str):
+                    lines = [
+                        line.strip(" -•\t")
+                        for line in value.replace("\r", "").split("\n")
+                        if line.strip(" -•\t")
+                    ]
+                    data[field] = lines
 
-        return PatientProfile.model_validate(data)
+            allowed_fields = set(PatientProfile.model_fields.keys())
+            extra_attributes: Dict[str, str] = {}
+            _ingest_extra_container(data.get("extra_attributes"), extra_attributes)
+
+            for key in list(data.keys()):
+                if key in allowed_fields:
+                    continue
+                _record_extra(key, data.pop(key), extra_attributes)
+
+            data["extra_attributes"] = extra_attributes
+            return data
+
+        content = chat_completion(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": PATIENT_PROFILE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "Here is the raw case description. "
+                        "Return ONLY a JSON object with the requested fields.\n\n"
+                        f"{raw_case}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=self.max_tokens,
+        )
+        if not content:
+            raise RuntimeError("Model returned empty content while building patient profile.")
+
+        try:
+            data = json.loads(content)
+        except Exception:
+            data = coerce_json_object(content)
+
+        normalized = _normalize_profile_data(data)
+        profile = PatientProfile.model_validate(normalized)
+
+        def _request_review(current_profile: PatientProfile) -> Dict[str, Any]:
+            """
+            Ask the model to spot missing details and return a partial payload.
+            """
+            current_json = current_profile.model_dump_json(indent=2)
+            content = chat_completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": PATIENT_PROFILE_REVIEW_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Raw case text:\n"
+                            f"{raw_case}\n\n"
+                            "Current Patient Profile (JSON):\n"
+                            f"{current_json}\n\n"
+                            "Return ONLY a JSON object with additions/clarifications. "
+                            "Leave out keys that do not need changes."
+                        ),
+                    },
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=self.max_tokens,
+            )
+            if not content:
+                return {}
+            try:
+                review_data = json.loads(content)
+            except Exception:
+                try:
+                    review_data = coerce_json_object(content)
+                except Exception:
+                    return {}
+            return review_data if isinstance(review_data, dict) else {}
+
+        def _merge_profile(base: PatientProfile, delta: Dict[str, Any]) -> PatientProfile:
+            """
+            Merge partial additions into the base profile without overwriting existing details.
+            """
+            if not delta:
+                return base
+
+            merged: Dict[str, Any] = base.model_dump()
+            merged_extras: Dict[str, str] = dict(merged.get("extra_attributes", {}) or {})
+
+            allowed_fields = set(PatientProfile.model_fields.keys())
+
+            delta_norm = _normalize_profile_data(delta)
+            for key, value in list(delta_norm.items()):
+                if key == "extra_attributes":
+                    _ingest_extra_container(value, merged_extras)
+                    continue
+                if key not in allowed_fields:
+                    _record_extra(key, value, merged_extras)
+                    continue
+                if value is None:
+                    continue
+
+                if key in list_fields:
+                    existing_list = list(merged.get(key, []) or [])
+                    candidates = value if isinstance(value, list) else [value]
+                    for item in candidates:
+                        text = item if isinstance(item, str) else str(item)
+                        text = text.strip() if isinstance(text, str) else str(text)
+                        if text and text not in existing_list:
+                            existing_list.append(text)
+                    merged[key] = existing_list
+                    continue
+
+                # Numeric fields (age) should only be set if empty.
+                if isinstance(value, (int, float)) and merged.get(key) in (None, "", []):
+                    merged[key] = value
+                    continue
+
+                text_val = ""
+                if isinstance(value, str):
+                    text_val = value.strip()
+                else:
+                    text_val = str(value).strip()
+                if not text_val:
+                    continue
+
+                existing_text = merged.get(key)
+                existing_norm = ""
+                if isinstance(existing_text, str):
+                    existing_norm = existing_text.strip()
+                elif existing_text is not None:
+                    existing_norm = str(existing_text).strip()
+                if existing_norm:
+                    if text_val not in existing_norm:
+                        merged[key] = f"{existing_norm}; {text_val}"
+                else:
+                    merged[key] = text_val
+
+            merged["extra_attributes"] = merged_extras
+            return PatientProfile.model_validate(merged)
+
+        passes = max(0, int(self.review_passes)) if self.review_passes is not None else 0
+        current = profile
+        for _ in range(passes):
+            additions = _request_review(current)
+            if not additions:
+                break
+            updated = _merge_profile(current, additions)
+            # If nothing changed, stop looping
+            if updated == current:
+                break
+            current = updated
+
+        return current
