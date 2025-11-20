@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 type Message = {
   role: "doctor" | "patient";
@@ -70,6 +70,7 @@ const App: React.FC = () => {
   const extraAttributes = patientObj?.extra_attributes;
   const hasExtraAttributes =
     extraAttributes && Object.keys(extraAttributes).length > 0;
+  const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   // Frontend-adjustable models and token budgets
   const [blpModel, setBlpModel] = useState("gpt-5.1");
@@ -401,7 +402,19 @@ const App: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (conversationEndRef.current) {
+      conversationEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [conversation]);
+
   const handleResetChat = async () => {
+    if (conversation.length > 0) {
+      const ok = window.confirm(
+        "Reset chat and clear the conversation history?"
+      );
+      if (!ok) return;
+    }
     setError(null);
     setBusyReset(true);
     try {
@@ -550,7 +563,7 @@ const App: React.FC = () => {
           <button
             className="primary-button"
             onClick={handleExtractBLP}
-            disabled={busyBLP}
+            disabled={busyBLP || !rawTranscript.trim()}
           >
             {busyBLP ? "Processing..." : "Anonymize & Extract BLP"}
           </button>
@@ -622,7 +635,7 @@ const App: React.FC = () => {
           <button
             className="primary-button"
             onClick={handleBuildPatientProfile}
-            disabled={busyProfile}
+            disabled={busyProfile || !rawCase.trim()}
           >
             {busyProfile ? "Structuring..." : "Structure data & build profile"}
           </button>
@@ -638,6 +651,26 @@ const App: React.FC = () => {
           )}
           {patientReady && (
             <span className="badge" style={{ marginLeft: 8 }}>Patient profile ready</span>
+          )}
+          {blpObj && (
+            <div className="panel-output">
+              <div className="panel-output-header">BLP (read-only)</div>
+              <div className="panel-output-body">
+                <pre className="panel-pre small-pre">
+                  {JSON.stringify(blpObj, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
+          {patientObj && (
+            <div className="panel-output">
+              <div className="panel-output-header">Patient Profile (read-only)</div>
+              <div className="panel-output-body">
+                <pre className="panel-pre small-pre">
+                  {JSON.stringify(patientObj, null, 2)}
+                </pre>
+              </div>
+            </div>
           )}
 
           {hasExtraAttributes && extraAttributes && (
@@ -695,17 +728,20 @@ const App: React.FC = () => {
                   and patient profile.
                 </div>
               ) : (
-                conversation.map((msg, idx) => (
-                  <div
-                    key={idx}
-                    className={`bubble bubble-${msg.role}`}
-                  >
-                    <div className="bubble-role">
-                      {msg.role === "doctor" ? "Doctor" : "Patient"}
+                <>
+                  {conversation.map((msg, idx) => (
+                    <div
+                      key={idx}
+                      className={`bubble bubble-${msg.role}`}
+                    >
+                      <div className="bubble-role">
+                        {msg.role === "doctor" ? "Doctor" : "Patient"}
+                      </div>
+                      <div className="bubble-text">{msg.content}</div>
                     </div>
-                    <div className="bubble-text">{msg.content}</div>
-                  </div>
-                ))
+                  ))}
+                  <div ref={conversationEndRef} />
+                </>
               )}
             </div>
 
@@ -717,7 +753,10 @@ const App: React.FC = () => {
                 value={doctorInput}
                 onChange={(e) => setDoctorInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (
+                    e.key === "Enter" &&
+                    (e.ctrlKey || e.metaKey || !e.shiftKey)
+                  ) {
                     e.preventDefault();
                     handleSendTurn();
                   }
@@ -726,7 +765,7 @@ const App: React.FC = () => {
               <button
                 className="primary-button"
                 onClick={handleSendTurn}
-                disabled={busyTurn}
+                disabled={busyTurn || !doctorInput.trim()}
               >
                 {busyTurn ? "Thinking..." : "Send"}
               </button>

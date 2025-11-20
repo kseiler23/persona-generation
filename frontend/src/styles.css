@@ -253,6 +253,9 @@ body {
   max-height: 18rem;
   overflow: auto;
 }
+.small-pre {
+  max-height: 12rem;
+}
 
 .placeholder {
   color: #6b7280;
