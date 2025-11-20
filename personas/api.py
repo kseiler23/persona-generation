@@ -62,6 +62,7 @@ app.add_middleware(
 class BLPRequest(BaseModel):
     transcript: str
     model: str | None = None
+    anonymizer_model: str | None = None
     max_tokens: int | None = None
 
 
@@ -142,16 +143,20 @@ def create_blp(payload: BLPRequest) -> BLPResponse:
     if not payload.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
 
-    
-    anonymizer = TranscriptAnonymizer(model=payload.model or TranscriptAnonymizer.model)
-    extractor = BLPExtractor(
-        model=payload.model or BLPExtractor.model,
-        max_tokens=payload.max_tokens if payload.max_tokens is not None else BLPExtractor.max_tokens,
-    )
+    anonymizer_model = payload.anonymizer_model or payload.model or TranscriptAnonymizer.model
+    extractor_model = payload.model or BLPExtractor.model
+    extractor_max_tokens = payload.max_tokens if payload.max_tokens is not None else BLPExtractor.max_tokens
 
-    anonymized = anonymizer.anonymize(payload.transcript)
-    
-    blp = extractor.extract(anonymized)
+    try:
+        anonymizer = TranscriptAnonymizer(model=anonymizer_model)
+        extractor = BLPExtractor(model=extractor_model, max_tokens=extractor_max_tokens)
+
+        anonymized = anonymizer.anonymize(payload.transcript)
+        blp = extractor.extract(anonymized)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"BLP generation failed: {e}")
     return BLPResponse(anonymized_transcript=anonymized, blp=blp)
 
 
@@ -166,11 +171,16 @@ def create_patient_profile(payload: PatientProfileRequest) -> PatientProfileResp
         raise HTTPException(status_code=400, detail="Raw case is empty.")
 
     
-    builder = PatientProfileBuilder(
-        model=payload.model or PatientProfileBuilder.model,
-        max_tokens=payload.max_tokens if payload.max_tokens is not None else PatientProfileBuilder.max_tokens,
-    )
-    profile = builder.build_from_case(payload.raw_case)
+    try:
+        builder = PatientProfileBuilder(
+            model=payload.model or PatientProfileBuilder.model,
+            max_tokens=payload.max_tokens if payload.max_tokens is not None else PatientProfileBuilder.max_tokens,
+        )
+        profile = builder.build_from_case(payload.raw_case)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Patient profile generation failed: {e}")
     return PatientProfileResponse(patient_profile=profile)
 
 
@@ -204,7 +214,12 @@ def send_turn(session_id: str, payload: TurnRequest) -> TurnResponse:
         raise HTTPException(status_code=404, detail="Session not found.")
 
     
-    reply = agent.reply(payload.doctor_utterance)
+    try:
+        reply = agent.reply(payload.doctor_utterance)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Simulated patient reply failed: {e}")
     return TurnResponse(patient_reply=reply)
 
 
@@ -240,7 +255,12 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
         max_tokens=payload.max_tokens if payload.max_tokens is not None else PersonaCritiqueAgent.max_tokens,
     )
 
-    critique = agent.critique(payload.conversation)
+    try:
+        critique = agent.critique(payload.conversation)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Critique generation failed: {e}")
     return CritiqueResponse(critique=critique)
 
 
@@ -349,17 +369,22 @@ def optimize_blp_prompt_endpoint(payload: OptimizeBLPRequest) -> OptimizeBLPResp
         configure_dspy(model_for_opt)
     except Exception:
         pass
-    # Suppress library prints during GEPA runs
-    _sink_out, _sink_err = io.StringIO(), io.StringIO()
-    with redirect_stdout(_sink_out), redirect_stderr(_sink_err):
-        optimize_blp_prompt(
-            examples=[example],
-            model_name=model_for_opt,
-            w_clinical=0.0,
-            w_persona=1.0,
-            skip_configure=True,
-            **kwargs,
-        )
+    try:
+        # Suppress library prints during GEPA runs
+        _sink_out, _sink_err = io.StringIO(), io.StringIO()
+        with redirect_stdout(_sink_out), redirect_stderr(_sink_err):
+            optimize_blp_prompt(
+                examples=[example],
+                model_name=model_for_opt,
+                w_clinical=0.0,
+                w_persona=1.0,
+                skip_configure=True,
+                **kwargs,
+            )
+    except OptimizationCancelled as e:
+        raise HTTPException(status_code=400, detail=str(e) or "Optimization cancelled.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"BLP prompt optimization failed: {e}")
 
     optimized_prompt = read_prompt("blp_extraction", "system_prompt", "")
     
@@ -510,5 +535,3 @@ def optimize_blp_prompt_cancel(job_id: str) -> OptimizeCancelResponse:
     if job.get("status") == "running":
         job["status"] = "cancelling"
     return OptimizeCancelResponse(job_id=job_id, status=str(job.get("status", "unknown")))
-
-
