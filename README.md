@@ -17,6 +17,28 @@ source .venv/bin/activate
 uv sync
 ```
 
+## Quickstart: Backend API
+
+Prereqs: Python 3.11+, git, OpenAI-compatible key (`OPENAI_API_KEY`).
+
+```bash
+cd /Users/tonyohalloran/Desktop/persona-generation
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .                    # installs deps from pyproject
+
+export OPENAI_API_KEY="sk-..."       # required for LiteLLM calls
+uvicorn personas.api:app --reload --port 8000
+```
+
+- Defaults target `gpt-5.1` (see `personas/config.yaml`). Override via `PERSONA_CONFIG_PATH` or per-request model parameters.
+- Live LLM smoke test (incurs token usage):
+
+```bash
+OPENAI_API_KEY="sk-..." pytest tests/test_patient_pipeline.py -q
+```
+
 ### Environment variables (`.env`)
 
 Backend LLM access is configured via a `.env` file loaded with `python-dotenv`. Create a `.env`
@@ -45,18 +67,14 @@ From the project root:
 ```bash
 cd /Users/apple/Desktop/Personas/frontend
 npm install
-npm run dev
+VITE_API_BASE_URL="http://localhost:8000" npm run dev
 ```
 
 Then open the printed localhost URL (by default `http://localhost:5173`) in your browser.
 
-## Backend integration sketch
+- Frontend model defaults are `gpt-5.1` (editable in the UI).
+- If pointing to a remote API, set `VITE_API_BASE_URL` before `npm run dev`.
 
-When you are ready to connect this UI to your Python pipeline, you can:
-
-- Expose HTTP endpoints (e.g., `/api/blp`, `/api/patient-profile`, `/api/simulated-patient`) from the Python side.
-- Replace the placeholder logic in `src/App.tsx` (`handleExtractBLP`, `handleBuildPatientProfile`, and `handleSendTurn`) with `fetch` calls to those endpoints.
-
-
+With both servers running, the UI will call the FastAPI backend at `/api/*` for BLP extraction, patient profile building, simulated patient turns, critiques, and prompt optimization.***
 
 
