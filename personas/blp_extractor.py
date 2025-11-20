@@ -88,6 +88,21 @@ class BLPExtractor:
             data = coerce_json_object(content)
         
 
+        # Normalize required string fields even if model emits dicts/objects.
+        string_fields: List[str] = [
+            "summary",
+            "communication_style",
+            "emotional_tone",
+            "cognitive_patterns",
+            "interpersonal_patterns",
+        ]
+        for field in string_fields:
+            value = data.get(field, "")
+            if value is None:
+                data[field] = ""
+            elif not isinstance(value, str):
+                data[field] = str(value)
+
         # The model sometimes returns string blobs or dicts instead of lists for certain fields.
         # Normalize those so they always become List[str] before validation.
         list_fields: List[str] = [
@@ -155,5 +170,4 @@ class BLPExtractor:
             data[field] = _normalize_to_str_list(data.get(field))
 
         return BehavioralLinguisticProfile.model_validate(data)
-
 
