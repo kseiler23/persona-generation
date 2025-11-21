@@ -97,6 +97,9 @@ const App: React.FC = () => {
   const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [busyReset, setBusyReset] = useState(false);
+  const [doctorSimModel, setDoctorSimModel] = useState(defaultModel);
+  const [doctorPatientModel, setDoctorPatientModel] = useState(defaultModel);
+  const [simPatientModel, setSimPatientModel] = useState(defaultModel);
   const extraAttributes = patientObj?.extra_attributes;
   const hasExtraAttributes =
     extraAttributes && Object.keys(extraAttributes).length > 0;
@@ -382,6 +385,8 @@ const App: React.FC = () => {
       body: JSON.stringify({
         blp: blpObj,
         patient_profile: patientObj,
+        model: simPatientModel,
+        api_key: apiKey || undefined,
       }),
     });
 
@@ -845,6 +850,18 @@ const App: React.FC = () => {
                 <span className="badge badge-soft">
                   {sessionId ? "Session active" : "Awaiting profiles"}
                 </span>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <select
+                    className="conversation-input"
+                    value={simPatientModel}
+                    onChange={(e) => setSimPatientModel(e.target.value)}
+                    style={{ minWidth: 200 }}
+                  >
+                    <option value={defaultModel}>Sim patient model: GPT-5.1</option>
+                    <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                    <option value="openai/gpt-4o">GPT-4o</option>
+                  </select>
+                </div>
                 <button
                   className="secondary-button"
                   onClick={handleResetChat}
@@ -909,32 +926,20 @@ const App: React.FC = () => {
 
             <div className="critique-controls">
               <div className="field-row" style={{ marginBottom: 8 }}>
-                  <div className="field-column">
-                      <label className="field-label">Critique Model</label>
-                      <input className="conversation-input" value={critiqueModel} onChange={(e) => setCritiqueModel(e.target.value)} />
-                  </div>
+                <div className="field-column">
+                  <label className="field-label">Critique model</label>
+                  <select
+                    className="conversation-input"
+                    style={{ display: "block", width: "100%", marginBottom: 4 }}
+                    value={critiqueModel}
+                    onChange={(e) => setCritiqueModel(e.target.value)}
+                  >
+                    <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (default)</option>
+                    <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                    <option value="openai/gpt-4o">GPT-4o</option>
+                  </select>
+                </div>
               </div>
-            <div className="field-row" style={{ marginBottom: 8 }}>
-              <div className="field-column">
-                <label className="field-label">Critique model</label>
-                <select
-                  className="conversation-input"
-                  style={{ display: "block", width: "100%", marginBottom: 4 }}
-                  value={critiqueModel}
-                  onChange={(e) => setCritiqueModel(e.target.value)}
-                >
-                  <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (default)</option>
-                  <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
-                  <option value="openai/gpt-4o">GPT-4o</option>
-                </select>
-                <input
-                  className="conversation-input"
-                  placeholder="Or type provider/model…"
-                  value={critiqueModel}
-                  onChange={(e) => setCritiqueModel(e.target.value)}
-                />
-              </div>
-            </div>
             <button
               className="secondary-button"
               onClick={handleRunCritique}
