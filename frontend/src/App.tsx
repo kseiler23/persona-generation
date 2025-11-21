@@ -95,6 +95,7 @@ const App: React.FC = () => {
   const [critique, setCritique] = useState<CritiqueResult | null>(null);
   const [originalPrompt, setOriginalPrompt] = useState<string | null>(null);
   const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
   const [busyReset, setBusyReset] = useState(false);
   const extraAttributes = patientObj?.extra_attributes;
   const hasExtraAttributes =
@@ -132,6 +133,7 @@ const App: React.FC = () => {
           transcript: rawTranscript,
           model: blpModel,
           max_tokens: blpMaxTokens,
+          api_key: apiKey || undefined,
         }),
         signal: controller.signal,
       });
@@ -328,6 +330,7 @@ const App: React.FC = () => {
           raw_case: rawCase,
           model: patientModel,
           max_tokens: patientMaxTokens,
+          api_key: apiKey || undefined,
         }),
         signal: controller.signal,
       });
@@ -546,7 +549,8 @@ const App: React.FC = () => {
             body: JSON.stringify({
                 blp: blpObj,
                 patient_profile: patientObj,
-                max_turns: 10
+                max_turns: 10,
+                api_key: apiKey || undefined,
             }),
         });
         if (!res.ok) throw new Error("Failed to run simulation");
@@ -574,7 +578,8 @@ const App: React.FC = () => {
                 blp: blpObj,
                 patient_profile: patientObj,
                 iterations: 3,
-                case_id: patientObj.id || "manual_case"
+                case_id: patientObj.id || "manual_case",
+                api_key: apiKey || undefined,
             }),
         });
         const data = await res.json();
@@ -598,6 +603,21 @@ const App: React.FC = () => {
         </div>
         <span className="badge">Node · React · Vite</span>
       </header>
+
+      <section className="panel" style={{ marginBottom: "1rem", display: "flex", gap: "1rem", alignItems: "center" }}>
+        <div style={{ flex: 1 }}>
+          <label className="field-label" htmlFor="api-key">API key (OpenAI / Gemini)</label>
+          <input
+            id="api-key"
+            type="password"
+            className="conversation-input"
+            placeholder="Enter API key to use for requests..."
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+        <span className="badge badge-soft">Used for all backend requests</span>
+      </section>
 
       {error && <div className="error-banner">{error}</div>}
 

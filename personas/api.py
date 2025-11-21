@@ -4,6 +4,7 @@ from typing import Dict, List, Any, Optional
 from uuid import uuid4
 import io
 from contextlib import redirect_stdout, redirect_stderr
+import os
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,6 +71,7 @@ class BLPRequest(BaseModel):
     model: str | None = None
     anonymizer_model: str | None = None
     max_tokens: int | None = None
+    api_key: str | None = None
 
 
 class BLPResponse(BaseModel):
@@ -82,6 +84,7 @@ class PatientProfileRequest(BaseModel):
     model: str | None = None
     max_tokens: int | None = None
     review_passes: int | None = None
+    api_key: str | None = None
 
 
 class PatientProfileResponse(BaseModel):
@@ -93,6 +96,7 @@ class SessionInitRequest(BaseModel):
     patient_profile: PatientProfile
     constraints: ConversationConstraints | None = None
     model: str | None = None
+    api_key: str | None = None
 
 
 class SessionInitResponse(BaseModel):
@@ -139,6 +143,7 @@ class DoctorSessionRequest(BaseModel):
     doctor_model: str | None = None
     patient_model: str | None = None
     max_turns: int = 10
+    api_key: str | None = None
 
 
 class DoctorSessionResponse(BaseModel):
@@ -163,6 +168,7 @@ class TrainDoctorRequest(BaseModel):
     
     iterations: int = 1
     model: str | None = None
+    api_key: str | None = None
 
 
 class TrainDoctorResponse(BaseModel):
@@ -189,6 +195,11 @@ def create_blp(payload: BLPRequest) -> BLPResponse:
 
     if not payload.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty.")
+
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
 
     anonymizer_model = payload.anonymizer_model or payload.model or TranscriptAnonymizer.model
     extractor_model = payload.model or BLPExtractor.model
@@ -217,6 +228,11 @@ def create_patient_profile(payload: PatientProfileRequest) -> PatientProfileResp
     if not payload.raw_case.strip():
         raise HTTPException(status_code=400, detail="Raw case is empty.")
 
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
+
     
     review_passes = (
         int(payload.review_passes)
@@ -244,6 +260,11 @@ def init_session(payload: SessionInitRequest) -> SessionInitResponse:
     Initialize a simulated patient session from BLP + Patient Profile (+ optional constraints).
     Returns a session_id used to drive a multi-turn interaction.
     """
+
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
 
     session_id = str(uuid4())
     
@@ -324,6 +345,11 @@ def simulate_doctor_session(payload: DoctorSessionRequest) -> DoctorSessionRespo
     Run a fully automated session between the Simulated Doctor and Simulated Patient.
     Returns the simulation trace and the Doctor's critique score.
     """
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
+
     try:
         # 1. Init Agents
         doc_agent = SimulatedDoctorAgent(
@@ -373,17 +399,26 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
     
     def _run_task():
         try:
-            case = DoctorTrainingCase(
-                case_id=payload.case_id,
-                patient_profile=payload.patient_profile,
-                blp=payload.blp
-            )
-            
-            # Run rollouts
+            if payload.api_key:
+                os.environ["OPENAI_API_KEY"] = payload.api_key
+                os.environ["GEMINI_API_KEY"] = payload.api_key
+                os.environ["GOOGLE_API_KEY"] = payload.api_key
+
+            model_name = payload.model or "gemini/gemini-3-pro-preview"
+            cases = prepare_cases_from_payload(payload.cases or [], payload.blp, payload.patient_profile)
+            if not cases:
+                cases = [
+                    DoctorTrainingCase(
+                        case_id=payload.case_id,
+                        patient_profile=payload.patient_profile,
+                        blp=payload.blp,
+                    )
+                ]
+
             run_training_rollouts(
-                cases=[case],
-                model_name=payload.model or "gemini/gemini-3-pro-preview",
-                num_rollouts=payload.iterations
+                cases=cases,
+                model_name=model_name,
+                num_rollouts=payload.iterations,
             )
             
             _JOBS[job_id]["status"] = "complete"
