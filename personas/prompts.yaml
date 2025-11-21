@@ -126,5 +126,5 @@ simulated_patient:
     - Stay true to the profile.
   max_tokens: 5000
 gepa:
-  reflection_model: gpt-5.1
+  reflection_model: gemini-3-pro-preview
   reflection_max_tokens: 32000

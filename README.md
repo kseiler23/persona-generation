@@ -32,7 +32,7 @@ export OPENAI_API_KEY="sk-..."       # required for LiteLLM calls
 uvicorn personas.api:app --reload --port 8000
 ```
 
-- Defaults target `gpt-5.1` (see `personas/config.yaml`). Override via `PERSONA_CONFIG_PATH` or per-request model parameters.
+- Defaults target `gemini-3-pro-preview` (see `personas/config.yaml`). Override via `PERSONA_CONFIG_PATH` or per-request model parameters.
 - Live LLM smoke test (incurs token usage):
 
 ```bash
@@ -45,7 +45,11 @@ Backend LLM access is configured via a `.env` file loaded with `python-dotenv`. 
 file in the project root with at least:
 
 ```bash
-OPENAI_API_KEY="sk-..."  # used by LiteLLM for OpenAI-compatible models
+# Gemini (default) via LiteLLM
+GEMINI_API_KEY="your-gemini-key"     # or GOOGLE_API_KEY if preferred
+
+# Optional OpenAI-compatible key (if you override models)
+OPENAI_API_KEY="sk-..."
 ```
 
 Do **not** commit your real key to version control.
@@ -72,9 +76,7 @@ VITE_API_BASE_URL="http://localhost:8000" npm run dev
 
 Then open the printed localhost URL (by default `http://localhost:5173`) in your browser.
 
-- Frontend model defaults are `gpt-5.1` (editable in the UI).
+- Frontend model defaults are `gemini-3-pro-preview` (editable in the UI).
 - If pointing to a remote API, set `VITE_API_BASE_URL` before `npm run dev`.
 
 With both servers running, the UI will call the FastAPI backend at `/api/*` for BLP extraction, patient profile building, simulated patient turns, critiques, and prompt optimization.***
-
-

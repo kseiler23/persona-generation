@@ -38,7 +38,7 @@ from .simulated_patient_agent import SimulatedPatientAgent
 # --- DSPy setup ----------------------------------------------------------------
 
 
-def configure_dspy(model_name: str = "gpt-4.1-mini") -> None:
+def configure_dspy(model_name: str = "gemini-3-pro-preview") -> None:
     """
     Point DSPy at the same underlying chat model we use elsewhere via LiteLLM.
 
@@ -308,7 +308,7 @@ def _extract_predict_instructions(module: DSPyBLPExtractor) -> str | None:
 def optimize_blp_prompt(
     *,
     examples: Iterable[BLPLearningExample],
-    model_name: str = "gpt-5",
+    model_name: str = "gemini-3-pro-preview",
     w_clinical: float = 0.0,
     w_persona: float = 1.0,
     # GEPA budgets (defaults tuned for light runs; adjust per need)
@@ -465,7 +465,7 @@ def example_usage() -> None:
     out_path = Path("optimized_blp_extractor.json")
     optimize_blp_prompt(
         examples=examples,
-        model_name="gpt-4.1-mini",
+        model_name="gemini-3-pro-preview",
         w_clinical=0.0,
         w_persona=1.0,
         reflection_minibatch_size=3,
@@ -480,6 +480,3 @@ def example_usage() -> None:
 
 if __name__ == "__main__":
     example_usage()
-
-
-

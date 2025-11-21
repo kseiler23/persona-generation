@@ -10,7 +10,9 @@ from .models import BehavioralLinguisticProfile, ConversationTurn, PatientProfil
 from .json_utils import coerce_json_object
 
 
-_DEFAULT_JUDGE_MODEL = str(get_value("defaults", "model", "gpt-5.1") or "gpt-5.1")
+_DEFAULT_JUDGE_MODEL = str(
+    get_value("defaults", "model", "gemini-3-pro-preview") or "gemini-3-pro-preview"
+)
 
 
 JUDGE_PROMPT = """
