@@ -597,6 +597,28 @@ const App: React.FC = () => {
     }
   };
 
+  const handleTrainFromData = async () => {
+    setBusyTraining(true);
+    try {
+        const res = await fetch(`${API_BASE}/api/train/doctor/from-data`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                num_cases: 10,
+                iterations: 2,
+                api_key: apiKey || undefined,
+            }),
+        });
+        const data = await res.json();
+        setTrainingJobId(data.job_id);
+        alert("Training from data files started! Loading 10 cases from parquet + transcripts.");
+    } catch(e) {
+        setError("Failed to start data training");
+    } finally {
+        setBusyTraining(false);
+    }
+  };
+
   return (
     <div className="app-root">
       <header className="app-header">
@@ -1072,13 +1094,25 @@ const App: React.FC = () => {
               <div className="critique-controls" style={{marginTop: '1rem', borderTop: '1px solid #eee', paddingTop: '1rem'}}>
                   <h3>Batch Training</h3>
                   <p>Run multiple simulations to collect traces for GRPO.</p>
-                  <button 
-                      className="primary-button"
-                      onClick={handleTrainDoctor}
-                      disabled={busyTraining}
-                  >
-                      {busyTraining ? "Job Queued..." : "Start Batch Training Job"}
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                          className="primary-button"
+                          onClick={handleTrainDoctor}
+                          disabled={busyTraining}
+                      >
+                          {busyTraining ? "Job Queued..." : "Train from Current Case"}
+                      </button>
+                      <button
+                          className="secondary-button"
+                          onClick={handleTrainFromData}
+                          disabled={busyTraining}
+                      >
+                          {busyTraining ? "Job Queued..." : "Train from Data Files"}
+                      </button>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', marginTop: '0.5rem', color: '#666' }}>
+                      "Train from Data Files" loads 10 cases from data/clinical_cases/cases.parquet and data/transcripts/
+                  </p>
               </div>
             </div>
           </>

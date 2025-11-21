@@ -40,6 +40,7 @@ from .blp_prompt_optimization import (
 )
 from .config import get_value
 from .train_doctor import DoctorTrainingCase, log_trace_for_grpo, run_training_rollouts
+from .data_loader import load_training_cases
 
 
 app = FastAPI(
@@ -155,17 +156,21 @@ class TrainDoctorRequest(BaseModel):
     """
     Request to run a batch of simulations to generate training traces.
     """
-    cases: List[Dict[str, Any]] # List of objects with {raw_case, raw_transcript} or pre-built profiles
+    cases: List[Dict[str, Any]] | None = None  # List of objects with {raw_case, raw_transcript} or pre-built profiles
     # For simplicity, we'll accept pre-built profiles + blps in a simplified format or just assume 1 case for now
     # To keep payload small, let's accept just one case for the "run" button in UI for now, 
     # or a list of structured objects.
     
     # Let's reuse the single case structure for the "Training" tab UI 
     # which is often "Optimize this current case".
-    blp: BehavioralLinguisticProfile
-    patient_profile: PatientProfile
+    blp: BehavioralLinguisticProfile | None = None
+    patient_profile: PatientProfile | None = None
     case_id: str = "manual_case"
-    
+
+    # New: load from data files
+    use_data_files: bool = False
+    num_cases: int = 2
+
     iterations: int = 1
     model: str | None = None
     api_key: str | None = None
@@ -419,14 +424,14 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
     Start a background job to run simulations (rollouts) and log traces for training.
     """
     job_id = str(uuid4())
-    
+
     # Store job status
     _JOBS[job_id] = {
         "status": "running",
         "progress": {"percent": 0, "rollouts": 0, "total": payload.iterations},
         "result": None
     }
-    
+
     def _run_task():
         try:
             if payload.api_key:
@@ -435,31 +440,103 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
                 os.environ["GOOGLE_API_KEY"] = payload.api_key
 
             model_name = payload.model or "gemini/gemini-3-pro-preview"
-            cases = prepare_cases_from_payload(payload.cases or [], payload.blp, payload.patient_profile)
-            if not cases:
-                cases = [
-                    DoctorTrainingCase(
-                        case_id=payload.case_id,
-                        patient_profile=payload.patient_profile,
-                        blp=payload.blp,
-                    )
-                ]
+
+            # Load cases from data files or payload
+            if payload.use_data_files:
+                cases = load_training_cases(
+                    num_cases=payload.num_cases,
+                    model=model_name
+                )
+            else:
+                cases = prepare_cases_from_payload(payload.cases or [], payload.blp, payload.patient_profile)
+                if not cases and payload.blp and payload.patient_profile:
+                    cases = [
+                        DoctorTrainingCase(
+                            case_id=payload.case_id,
+                            patient_profile=payload.patient_profile,
+                            blp=payload.blp,
+                        )
+                    ]
 
             run_training_rollouts(
                 cases=cases,
                 model_name=model_name,
                 num_rollouts=payload.iterations,
             )
-            
+
             _JOBS[job_id]["status"] = "complete"
             _JOBS[job_id]["progress"]["percent"] = 100
-            
+
         except Exception as e:
             _JOBS[job_id]["status"] = "error"
             _JOBS[job_id]["error"] = str(e)
 
     background_tasks.add_task(_run_task)
-    
+
+    return TrainDoctorResponse(job_id=job_id, status="started")
+
+
+class TrainFromDataRequest(BaseModel):
+    """
+    Request to train from data files (parquet + transcripts).
+    """
+    num_cases: int = 10
+    iterations: int = 2
+    model: str | None = None
+    api_key: str | None = None
+
+
+@app.post("/api/train/doctor/from-data", response_model=TrainDoctorResponse)
+def train_doctor_from_data(payload: TrainFromDataRequest, background_tasks: BackgroundTasks) -> TrainDoctorResponse:
+    """
+    Start a background training job using cases loaded from data files.
+    This is a simplified endpoint that automatically loads clinical cases from
+    data/clinical_cases/cases.parquet and transcripts from data/transcripts/.
+    """
+    job_id = str(uuid4())
+
+    _JOBS[job_id] = {
+        "status": "running",
+        "progress": {"percent": 0, "rollouts": 0, "total": payload.iterations},
+        "result": None
+    }
+
+    def _run_task():
+        try:
+            if payload.api_key:
+                os.environ["OPENAI_API_KEY"] = payload.api_key
+                os.environ["GEMINI_API_KEY"] = payload.api_key
+                os.environ["GOOGLE_API_KEY"] = payload.api_key
+
+            model_name = payload.model or "gemini/gemini-3-pro-preview"
+
+            print(f"[DEBUG] Loading {payload.num_cases} cases from data files...")
+            cases = load_training_cases(
+                num_cases=payload.num_cases,
+                model=model_name
+            )
+            print(f"[DEBUG] Loaded {len(cases)} cases")
+
+            print(f"[DEBUG] Starting training rollouts with {payload.iterations} iterations...")
+            run_training_rollouts(
+                cases=cases,
+                model_name=model_name,
+                num_rollouts=payload.iterations,
+            )
+
+            print(f"[DEBUG] Training complete!")
+            _JOBS[job_id]["status"] = "complete"
+            _JOBS[job_id]["progress"]["percent"] = 100
+
+        except Exception as e:
+            import traceback
+            error_msg = f"{str(e)}\n{traceback.format_exc()}"
+            print(f"[ERROR] Training job failed: {error_msg}")
+            _JOBS[job_id]["status"] = "error"
+            _JOBS[job_id]["error"] = error_msg
+
+    background_tasks.add_task(_run_task)
+
     return TrainDoctorResponse(job_id=job_id, status="started")
 
 
