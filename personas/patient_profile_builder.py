@@ -82,7 +82,7 @@ class PatientProfileBuilder:
     Raw case (structured + unstructured) → structured Patient Profile.
     """
 
-    model: str = get_model_for_agent("patient_profile", "gpt-5.1")
+    model: str = get_model_for_agent("patient_profile", "gemini-3-pro-preview")
     max_tokens: int = get_max_tokens_for_agent("patient_profile", 1024)
     review_passes: int = 1
 

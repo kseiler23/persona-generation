@@ -49,7 +49,7 @@ class BLPExtractor:
     Anonymized transcript → Behavioral & Linguistic Profile (BLP).
     """
 
-    model: str = get_model_for_agent("blp_extraction", "gpt-4.1-mini")
+    model: str = get_model_for_agent("blp_extraction", "gemini-3-pro-preview")
     max_tokens: int = get_max_tokens_for_agent("blp_extraction", 2048)
 
     def extract(self, anonymized_transcript: str) -> BehavioralLinguisticProfile:
@@ -170,4 +170,3 @@ class BLPExtractor:
             data[field] = _normalize_to_str_list(data.get(field))
 
         return BehavioralLinguisticProfile.model_validate(data)
-
