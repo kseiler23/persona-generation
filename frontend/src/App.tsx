@@ -278,7 +278,7 @@ const App: React.FC = () => {
             setOptimizeTimer(null);
             setBusyOptimize(false);
             setOptimizeJobId(null);
-            setError("Optimization job failed. Check backend logs for details.");
+            setError(`Optimization job failed: ${pData.message || "Check backend logs for details."}`);
           }
         } catch {
           // ignore transient errors
@@ -524,7 +524,13 @@ const App: React.FC = () => {
 
       if (!res.ok) {
         const t = await res.text();
-        throw new Error(`Critique API error (${res.status}): ${t}`);
+        // Try to parse JSON error if possible, otherwise use text
+        let msg = t;
+        try {
+            const jsonErr = JSON.parse(t);
+            if (jsonErr.detail) msg = jsonErr.detail;
+        } catch {}
+        throw new Error(`Critique API error (${res.status}): ${msg}`);
       }
 
       const data: { critique: CritiqueResult } = await res.json();
@@ -557,10 +563,15 @@ const App: React.FC = () => {
                 blp: blpObj,
                 patient_profile: patientObj,
                 max_turns: 10,
+                doctor_model: doctorSimModel,
+                patient_model: doctorPatientModel,
                 api_key: apiKey || undefined,
             }),
         });
-        if (!res.ok) throw new Error("Failed to run simulation");
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Simulation failed: ${text}`);
+        }
         const data = await res.json();
         setDoctorTrace(data.trace);
         setDoctorCritique(data.critique);
@@ -971,6 +982,23 @@ const App: React.FC = () => {
             >
               {busyCritique ? "Critiquing..." : "Run critique on conversation"}
             </button>
+            {busyCritique && (
+                <div style={{ marginTop: "0.5rem" }}>
+                    <div className="progress">
+                        <div
+                            className="progress-bar"
+                            style={{ width: "100%", animation: "indeterminate 1.5s infinite linear", background: "linear-gradient(90deg, #3b82f6, #8b5cf6)" }}
+                        />
+                        <style>{`
+                            @keyframes indeterminate {
+                                0% { transform: translateX(-100%); }
+                                100% { transform: translateX(100%); }
+                            }
+                        `}</style>
+                    </div>
+                    <div className="progress-label"> Analyzing conversation... </div>
+                </div>
+            )}
             <button
               className="primary-button"
               onClick={handleEndAndOptimize}
@@ -1018,6 +1046,41 @@ const App: React.FC = () => {
                     {(critique.persona_alignment.score * 100).toFixed(0)}% –{" "}
                     {critique.persona_alignment.label}
                   </p>
+                  <div style={{ marginTop: "1rem" }}>
+                    <strong>Safety Flags:</strong> {critique.safety_flags.length > 0 ? critique.safety_flags.join(", ") : "None"}
+                  </div>
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <strong>Suggestions:</strong>
+                    <ul style={{ margin: "0.5rem 0 0 1.2rem" }}>
+                      {critique.suggested_improvements.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(originalPrompt || optimizedPrompt) && (
+              <div className="panel-output">
+                <div className="panel-output-header">Optimization Result</div>
+                <div className="panel-output-body">
+                  <div style={{ marginBottom: "1rem" }}>
+                    <strong>Original Prompt:</strong>
+                    <pre className="panel-pre small-pre">{originalPrompt}</pre>
+                  </div>
+                  <div>
+                    <strong>Optimized Prompt:</strong>
+                    <pre
+                      className="panel-pre small-pre"
+                      style={{ border: "1px solid #4caf50" }}
+                    >
+                      {optimizedPrompt}
+                    </pre>
+                  </div>
+                  <p style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.5rem" }}>
+                    The optimized prompt has been saved to <code>prompts.yaml</code>.
+                  </p>
                 </div>
               </div>
             )}
@@ -1036,6 +1099,28 @@ const App: React.FC = () => {
                           <div className="conversation-caption">
                               Watch the Simulated Doctor interview the Patient autonomously.
                           </div>
+                          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+                            <select
+                              className="conversation-input"
+                              style={{ fontSize: "0.85rem", padding: "4px 8px" }}
+                              value={doctorSimModel}
+                              onChange={(e) => setDoctorSimModel(e.target.value)}
+                            >
+                              <option value={defaultModel}>Dr Model: GPT-5.1</option>
+                              <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                              <option value="openai/gpt-4o">GPT-4o</option>
+                            </select>
+                            <select
+                              className="conversation-input"
+                              style={{ fontSize: "0.85rem", padding: "4px 8px" }}
+                              value={doctorPatientModel}
+                              onChange={(e) => setDoctorPatientModel(e.target.value)}
+                            >
+                              <option value={defaultModel}>Pat Model: GPT-5.1</option>
+                              <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                              <option value="openai/gpt-4o">GPT-4o</option>
+                            </select>
+                          </div>
                       </div>
                       <button 
                           className="primary-button"
@@ -1048,7 +1133,21 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="conversation-body" style={{ minHeight: 180 }}>
-                      { !doctorTrace ? (
+                      { busyDoctorSim ? (
+                          <div className="placeholder" style={{ textAlign: "center", marginTop: "2rem" }}>
+                              <div className="spinner" style={{ 
+                                  width: "24px", 
+                                  height: "24px", 
+                                  border: "3px solid rgba(255,255,255,0.3)", 
+                                  borderTopColor: "#fff", 
+                                  borderRadius: "50%", 
+                                  animation: "spin 1s linear infinite",
+                                  margin: "0 auto 1rem" 
+                              }} />
+                              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                              <div>Running automated simulation...</div>
+                          </div>
+                      ) : !doctorTrace ? (
                           <div className="placeholder">
                               Click "Run Auto-Sim" to start an automated session.
                           </div>

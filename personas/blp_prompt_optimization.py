@@ -9,7 +9,7 @@ This does NOT change the runtime API. Instead, it lets you:
 2. For each candidate BLP extractor prompt, run:
    transcript -> BLP -> simulated patient conversation -> critique.
 3. Use the critique scores (e.g., persona alignment, clinical alignment) as a reward signal.
-4. Let DSPy GEPA perform reflective instruction optimization over the
+4. Let DSPy GEPA (or COPRO) perform reflective instruction optimization over the
    BLP extraction step (no few-shot demo bootstrapping).
 
 You can then manually copy the best-found prompt back into
@@ -22,6 +22,20 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import dspy
+
+# Attempt to import GEPA (newer) or fallback to COPRO (standard)
+try:
+    from dspy.teleprompt import GEPA
+except ImportError:
+    try:
+        from dspy.optimizers import GEPA
+    except ImportError:
+        GEPA = None
+
+try:
+    from dspy.teleprompt import COPRO
+except ImportError:
+    from dspy.optimizers import COPRO
 
 from .critique_agent import PersonaCritiqueAgent
 from .prompts import read_prompt, write_prompt
@@ -115,6 +129,7 @@ def run_single_simulation(
     example: BLPLearningExample,
     builder: PatientProfileBuilder,
     convo_turns: int = 4,
+    model_name: str = "gemini/gemini-3-pro-preview",
 ) -> Tuple[List[ConversationTurn], BehavioralLinguisticProfile, PatientProfile]:
     """
     Given a candidate BLP (as JSON text) and a training example, run a short
@@ -124,7 +139,11 @@ def run_single_simulation(
     blp = BehavioralLinguisticProfile.model_validate_json(blp_json)
     patient_profile = builder.build_from_case(example.raw_case)
 
-    agent = SimulatedPatientAgent(blp=blp, patient_profile=patient_profile)
+    agent = SimulatedPatientAgent(
+        blp=blp, 
+        patient_profile=patient_profile,
+        model=model_name
+    )
 
     conversation: List[ConversationTurn] = []
     for idx, doctor_utt in enumerate(example.doctor_script[:convo_turns]):
@@ -142,6 +161,7 @@ def critique_reward(
     builder: PatientProfileBuilder,
     w_clinical: float = 0.5,
     w_persona: float = 0.5,
+    model_name: str = "gemini/gemini-3-pro-preview",
 ) -> float:
     """
     Compute a scalar reward from the critique agent for a single example.
@@ -151,6 +171,7 @@ def critique_reward(
         blp_json=blp_json,
         example=example,
         builder=builder,
+        model_name=model_name,
     )
 
     critique_agent = PersonaCritiqueAgent(
@@ -158,6 +179,7 @@ def critique_reward(
         patient_profile=patient_profile,
         raw_transcript=example.raw_transcript,
         raw_case=example.raw_case,
+        model=model_name,
     )
     critique = critique_agent.critique(conversation)
 
@@ -175,12 +197,10 @@ def make_metric(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     total_budget: Optional[int] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
-) -> Callable[[dspy.Example, dspy.Prediction, dspy.Trace], float]:
+    model_name: str = "gemini/gemini-3-pro-preview",
+) -> Callable[[dspy.Example, dspy.Prediction, Optional[dspy.Trace]], float]:
     """
     Wrap the critique-based reward into a DSPy metric function.
-
-    Note: This returns a scalar score. GEPA can also consume textual feedback,
-    but a scalar works fine if you prefer simplicity.
     """
 
     # Map DSPy examples back to our richer BLPLearningExample objects.
@@ -191,20 +211,21 @@ def make_metric(
     def metric(
         example: dspy.Example,
         prediction: dspy.Prediction,
-        trace: dspy.Trace,
-        pred_name=None,
-        pred_trace=None,
-    ) -> float:  # type: ignore[override]
+        trace: Optional[dspy.Trace] = None,
+        pred_name: Optional[str] = None,
+        pred_trace: Optional[dspy.Trace] = None,
+    ) -> float:
         # Check cooperative cancellation before doing any heavy work
         if should_cancel is not None:
             try:
                 if should_cancel():
-                    raise OptimizationCancelled("GEPA optimization cancelled by user")
+                    raise OptimizationCancelled("Optimization cancelled by user")
             except OptimizationCancelled:
                 raise
             except Exception:
                 # If the predicate itself fails, treat as cancelled to be safe.
-                raise OptimizationCancelled("GEPA optimization cancelled")
+                raise OptimizationCancelled("Optimization cancelled")
+        
         # DSPy passes the fields from the signature; we need to know which
         # BLPLearningExample this corresponds to. We stash its index in the
         # example metadata.
@@ -216,13 +237,19 @@ def make_metric(
         if not blp_json:
             return 0.0
 
-        score = critique_reward(
-            example=index[ex_id],
-            blp_json=blp_json,
-            builder=builder,
-            w_clinical=w_clinical,
-            w_persona=w_persona,
-        )
+        try:
+            score = critique_reward(
+                example=index[ex_id],
+                blp_json=blp_json,
+                builder=builder,
+                w_clinical=w_clinical,
+                w_persona=w_persona,
+                model_name=model_name,
+            )
+        except Exception:
+            # If simulation or critique fails, return 0 reward
+            return 0.0
+
         nonlocal calls, best_score
         calls += 1
         if score > best_score:
@@ -243,7 +270,6 @@ def make_metric(
                     }
                 )
             except Exception:
-                # Progress is best-effort; ignore callback errors
                 pass
         return score
 
@@ -311,11 +337,11 @@ def optimize_blp_prompt(
     model_name: str = "gemini/gemini-3-pro-preview",
     w_clinical: float = 0.0,
     w_persona: float = 1.0,
-    # GEPA budgets (defaults tuned for light runs; adjust per need)
+    # COPRO/GEPA budget knobs
     reflection_minibatch_size: int = 3,
-    candidate_selection_strategy: str = "pareto",
+    candidate_selection_strategy: str = "pareto", 
     max_metric_calls: int = 200,
-    failure_score: float = 0.0,
+    failure_score: float = 0.0, 
     perfect_score: float = 1.0,
     use_merge: bool = True,
     track_stats: bool = True,
@@ -325,12 +351,11 @@ def optimize_blp_prompt(
     skip_configure: bool = False,
 ) -> DSPyBLPExtractor:
     """
-    Run a DSPy GEPA loop to improve the BLP extraction prompt.
+    Run a DSPy optimization loop (GEPA if available, else COPRO) to improve the BLP extraction prompt.
 
     - `examples`: small set of (raw_transcript, raw_case, doctor_script)
-    - `w_clinical`, `w_persona`: mix weights for the reward (set `w_clinical=0.0` for persona-only)
-    - GEPA budget knobs: reflection_minibatch_size, max_metric_calls, etc.
-    - `output_path`: optional path to save the resulting prompt/program
+    - `reflection_minibatch_size`: maps to COPRO `breadth` or GEPA `reflection_minibatch_size`
+    - `max_metric_calls`: used to estimate COPRO `depth` or GEPA budget
     """
 
     if not skip_configure:
@@ -340,10 +365,14 @@ def optimize_blp_prompt(
             # If DSPy settings were configured by another thread, ignore reconfigure errors.
             pass
 
-    # Configure reflection LM for GEPA (required by DSPy).
+    # Configure reflection LM (required by DSPy optimizers).
+    # We use the passed model_name directly. The caller (API or script) is responsible
+    # for determining the correct model (from config or user input).
     try:
-        reflection_model_any = get_value("gepa", "reflection_model", model_name)
-        reflection_model = str(reflection_model_any) if reflection_model_any is not None else model_name
+        reflection_model = model_name
+        
+        # Only look up max tokens from config, as that's a model-specific property
+        # that might not be passed in.
         reflection_max_tokens_any = get_value("gepa", "reflection_max_tokens", 32000)
         try:
             reflection_max_tokens = int(reflection_max_tokens_any) if reflection_max_tokens_any is not None else 32000
@@ -352,32 +381,39 @@ def optimize_blp_prompt(
     except Exception:
         reflection_model = model_name
         reflection_max_tokens = 32000
+    
+    # If model is standard OpenAI GPT-4/4o, clamp max_tokens safely if it seems too high
+    # (Standard GPT-4 output limit is 4k-16k depending on version)
+    if "gpt-4" in reflection_model and reflection_max_tokens > 16000 and "gpt-5" not in reflection_model:
+        reflection_max_tokens = 4096  # Sane default for older models
+
     reflection_lm = dspy.LM(
         model=reflection_model,
         temperature=1.0,
         max_tokens=reflection_max_tokens,
+        # Force JSON object to prevent "list object has no attribute items" error
+        # when COPRO parses the proposed instructions.
+        response_format={"type": "json_object"},
     )
 
     # Seed the DSPy Signature instruction with the real runtime system prompt from YAML.
-    # This ensures GEPA edits the exact instruction used in production.
+    # This ensures the optimizer edits the exact instruction used in production.
     seed_instruction = read_prompt("blp_extraction", "system_prompt", "")
     if seed_instruction.strip():
         try:
             BLPExtractionSignature.__doc__ = seed_instruction  # type: ignore[attr-defined]
         except Exception:
-            # If for some reason doc assignment fails, proceed with Signature default.
             pass
 
     builder = PatientProfileBuilder(model=model_name)
     module = DSPyBLPExtractor()
 
-    # Convert to DSPy examples; we attach ex_id so the metric can find the
-    # corresponding BLPLearningExample.
+    # Convert to DSPy examples
     dspy_examples: List[dspy.Example] = []
     raw_examples: List[BLPLearningExample] = list(examples)
 
     for idx, ex in enumerate(raw_examples):
-        d_ex = dspy.Example(transcript=ex.raw_transcript)
+        d_ex = dspy.Example(transcript=ex.raw_transcript).with_inputs("transcript")
         setattr(d_ex, "ex_id", idx)
         dspy_examples.append(d_ex)
 
@@ -389,22 +425,48 @@ def optimize_blp_prompt(
         progress_callback=progress_callback,
         total_budget=max_metric_calls,
         should_cancel=should_cancel,
+        model_name=model_name, # Pass model_name to the metric factory
     )
 
-    # GEPA reflective optimizer (no demos; edits instruction text of the predictor)
-    teleprompter = dspy.GEPA(
-        metric=metric,
-        reflection_lm=reflection_lm,
-        reflection_minibatch_size=reflection_minibatch_size,
-        candidate_selection_strategy=candidate_selection_strategy,
-        max_metric_calls=max_metric_calls,
-        failure_score=failure_score,
-        perfect_score=perfect_score,
-        use_merge=use_merge,
-        track_stats=track_stats,
-    )
+    # Decide whether to use GEPA (preferred, if installed) or COPRO (fallback)
+    if GEPA is not None:
+        # GEPA optimization
+        teleprompter = GEPA(
+            metric=metric,
+            reflection_lm=reflection_lm,
+            reflection_minibatch_size=max(2, reflection_minibatch_size),
+            candidate_selection_strategy=candidate_selection_strategy,
+            max_metric_calls=max_metric_calls,
+            track_stats=track_stats,
+            # Pass other params if GEPA supports them, but these are the core ones
+        )
+        # GEPA compile signature usually doesn't require eval_kwargs
+        optimized_module = teleprompter.compile(module, trainset=dspy_examples)
+    
+    else:
+        # COPRO Fallback
+        # Calculate depth from budget
+        breadth = max(2, reflection_minibatch_size)
+        train_size = len(dspy_examples)
+        if train_size > 0:
+            depth = max(1, int(max_metric_calls / (max(1, breadth * train_size))))
+        else:
+            depth = 3
 
-    optimized_module = teleprompter.compile(module, trainset=dspy_examples)
+        teleprompter = COPRO(
+            metric=metric,
+            prompt_model=reflection_lm,
+            breadth=breadth,
+            depth=depth,
+            track_last_step=track_stats,
+        )
+        
+        # COPRO often needs eval_kwargs={} to avoid crashes in certain versions
+        optimized_module = teleprompter.compile(
+            module, 
+            trainset=dspy_examples, 
+            eval_kwargs={}
+        )
 
     # Try to write back the evolved instruction to prompts.yaml so runtime uses it.
     evolved = _extract_predict_instructions(optimized_module)
@@ -412,7 +474,6 @@ def optimize_blp_prompt(
         try:
             write_prompt("blp_extraction", "system_prompt", evolved)
         except Exception:
-            # Non-fatal: still return the optimized module.
             pass
 
     if output_path is not None:
@@ -438,8 +499,6 @@ def optimize_blp_prompt(
 def example_usage() -> None:
     """
     Minimal sketch of how you might call `optimize_blp_prompt` from a script.
-
-    Replace the inline examples with your own transcripts / cases.
     """
 
     examples = [
@@ -448,16 +507,6 @@ def example_usage() -> None:
             raw_case="... raw case material 1 ...",
             doctor_script=[
                 "Hi, I'm Dr. X. What brought you in today?",
-                "How has this been affecting your work or school?",
-                "Have you noticed any changes in your sleep or appetite?",
-            ],
-        ),
-        BLPLearningExample(
-            raw_transcript="... raw interview transcript 2 ...",
-            raw_case="... raw case material 2 ...",
-            doctor_script=[
-                "Can you tell me a bit about what's been hardest lately?",
-                "How do you usually cope when things feel overwhelming?",
             ],
         ),
     ]
@@ -468,14 +517,9 @@ def example_usage() -> None:
         model_name="gemini/gemini-3-pro-preview",
         w_clinical=0.0,
         w_persona=1.0,
-        reflection_minibatch_size=3,
-        candidate_selection_strategy="pareto",
         max_metric_calls=200,
-        use_merge=True,
-        track_stats=True,
         output_path=out_path,
     )
-    
 
 
 if __name__ == "__main__":

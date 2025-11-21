@@ -346,6 +346,9 @@ def reset_simulated_patient_session(session_id: str) -> ResetSessionResponse:
     return ResetSessionResponse(session_id=session_id, status="reset")
 
 
+import sys
+import traceback
+
 @app.post("/api/critique", response_model=CritiqueResponse)
 def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
     """
@@ -360,7 +363,7 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
         os.environ["OPENAI_API_KEY"] = payload.api_key
         os.environ["GEMINI_API_KEY"] = payload.api_key
         os.environ["GOOGLE_API_KEY"] = payload.api_key
-        litellm.api_key = payload.api_key
+        # litellm.api_key = payload.api_key # removed this line to fix network error caused by potential race conditions or library behavior
 
     agent = PersonaCritiqueAgent(
         blp=payload.blp,
@@ -369,6 +372,7 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
         raw_case=payload.raw_case,
         model=payload.model or PersonaCritiqueAgent.model,
         max_tokens=payload.max_tokens if payload.max_tokens is not None else PersonaCritiqueAgent.max_tokens,
+        api_key=payload.api_key,
     )
 
     try:
@@ -376,6 +380,7 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
     except HTTPException:
         raise
     except Exception as e:
+        traceback.print_exc(file=sys.stderr)
         raise HTTPException(status_code=502, detail=f"Critique generation failed: {e}")
     return CritiqueResponse(critique=critique)
 
@@ -697,6 +702,11 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
     doctor_script: List[str] = [turn.content for turn in payload.conversation if turn.role == "doctor"]
     if not doctor_script:
         raise HTTPException(status_code=400, detail="Conversation must include at least one doctor utterance.")
+
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
 
     job_id = str(uuid4())
     original_prompt = read_prompt("blp_extraction", "system_prompt", "")
