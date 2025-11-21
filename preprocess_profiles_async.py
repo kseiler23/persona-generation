@@ -29,6 +29,48 @@ from personas.case_filter import CaseFilter
 from personas.models import BehavioralLinguisticProfile, PatientProfile
 
 
+TELEHEALTH_KEYWORDS = [
+    "telehealth",
+    "tele-health",
+    "telemedicine",
+    "tele-medicine",
+    "telemed",
+    "virtual visit",
+    "virtual care",
+    "video visit",
+    "video consultation",
+    "video consult",
+    "remote consultation",
+    "remote visit",
+    "phone visit",
+    "telephone visit",
+    "audio-only visit",
+]
+
+TELEHEALTH_TEXT_COLUMNS = [
+    "case_text",
+    "case",
+    "abstract",
+    "summary",
+    "title",
+    "notes",
+    "narrative",
+    "diagnosis_text",
+]
+
+
+def _row_is_telehealth(row: pd.Series) -> bool:
+    """Heuristic check for telehealth-related language in common text fields."""
+    blob_parts: List[str] = []
+    for col in TELEHEALTH_TEXT_COLUMNS:
+        if col in row and pd.notna(row[col]) and isinstance(row[col], str):
+            blob_parts.append(row[col].lower())
+    if not blob_parts:
+        return False
+    blob = " ".join(blob_parts)
+    return any(term in blob for term in TELEHEALTH_KEYWORDS)
+
+
 async def filter_cases(
     df: pd.DataFrame,
     transcript_files: List[Path],
@@ -114,6 +156,7 @@ async def preprocess_blps_async(
     limit: Optional[int] = None,
     max_concurrent: int = 5,
     included_indices: Optional[List[int]] = None,
+    preselected_indices: Optional[List[int]] = None,
 ) -> None:
     """
     Extract BLPs from all transcripts and save them as JSON files (async).
@@ -124,7 +167,8 @@ async def preprocess_blps_async(
         model: Model to use for BLP extraction
         limit: Optional limit on number of transcripts to process
         max_concurrent: Maximum concurrent extraction requests
-        included_indices: Optional list of indices to process (from filtering)
+        included_indices: Optional list of indices to process (from filtering/index mapping)
+        preselected_indices: Optional list of indices to pre-filter (e.g., telehealth-only)
     """
     transcripts_path = Path(transcripts_dir)
     output_path = Path(output_dir)
@@ -132,12 +176,23 @@ async def preprocess_blps_async(
 
     # Get all transcript files
     transcript_files = sorted(transcripts_path.glob("*.txt"))
-    if limit:
-        transcript_files = transcript_files[:limit]
 
-    # Filter by included indices if provided
+    # Determine which indices to process
+    selected_indices: Optional[List[int]] = None
     if included_indices is not None:
-        transcript_files = [transcript_files[i] for i in included_indices if i < len(transcript_files)]
+        selected_indices = included_indices
+    elif preselected_indices is not None:
+        selected_indices = preselected_indices
+
+    if selected_indices is not None:
+        if limit is not None:
+            selected_indices = selected_indices[:limit]
+        transcript_files = [
+            transcript_files[i] for i in selected_indices if i < len(transcript_files)
+        ]
+    else:
+        if limit:
+            transcript_files = transcript_files[:limit]
 
     print(f"\nProcessing {len(transcript_files)} transcripts...")
 
@@ -200,7 +255,8 @@ async def preprocess_clinical_profiles_async(
     filter_model: str = "gpt-4o-mini",
     filter_output: Optional[str] = None,
     index_mapping_output: Optional[str] = None,
-) -> None:
+    only_telehealth: bool = False,
+) -> List[int]:
     """
     Extract clinical profiles from case texts and save them as JSON files (async).
 
@@ -215,36 +271,48 @@ async def preprocess_clinical_profiles_async(
         filter_model: Model to use for case filtering
         filter_output: Optional path to save filter results JSON
         index_mapping_output: Optional path to save index mapping JSON
+        only_telehealth: If True, restrict processing to telehealth-related cases
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Load cases
     df = pd.read_parquet(cases_file)
+    df = df.reset_index(drop=True)
+    df["__orig_idx"] = df.index  # keep track of original position
+    total_cases_original = len(df)
 
     # Get transcript files for index consistency
     transcripts_path = Path(transcripts_dir)
-    transcript_files = sorted(transcripts_path.glob("*.txt"))
+    all_transcript_files = sorted(transcripts_path.glob("*.txt"))
 
-    # Determine number of cases to process
-    num_items = len(df)
-    if limit:
-        num_items = min(num_items, limit)
+    # Start with all indices, optionally restrict to telehealth
+    selected_indices = list(range(len(df)))
+    if only_telehealth:
+        telehealth_set = []
+        for i, (_, row) in enumerate(df.iterrows()):
+            if _row_is_telehealth(row):
+                telehealth_set.append(i)
+        selected_indices = telehealth_set
+        print(f"\n[INFO] Telehealth filter enabled: {len(selected_indices)} cases matched")
+        if not selected_indices:
+            print("[WARN] No telehealth cases found; nothing to process.")
+            return
 
-    df = df.head(num_items)
+    # Apply limit after selection (if provided)
+    if limit is not None:
+        selected_indices = selected_indices[:limit]
 
-    # For filtering and profiling, we don't need transcripts
-    # But we'll use transcript filenames for consistent output naming
-    # Generate transcript-style names for all cases if we have more cases than transcripts
-    if len(df) > len(transcript_files):
-        print(f"\n[INFO] More cases ({len(df)}) than transcripts ({len(transcript_files)})")
-        print(f"[INFO] Generating transcript-style indices for all cases")
-        # Create dummy transcript paths for consistent naming (Path already imported at top)
-        transcript_files = [
-            Path(f"{i+1:02d}.txt") for i in range(len(df))
-        ]
-    else:
-        transcript_files = transcript_files[:num_items]
+    # Slice dataframe to selected indices
+    df = df.iloc[selected_indices].reset_index(drop=True)
+
+    # Build aligned transcript list based on original indices; backfill with dummy names if needed
+    transcript_files = []
+    for idx in selected_indices:
+        if idx < len(all_transcript_files):
+            transcript_files.append(all_transcript_files[idx])
+        else:
+            transcript_files.append(Path(f"{idx+1:02d}.txt"))
 
     print(f"\nProcessing {len(df)} clinical cases")
 
@@ -263,13 +331,16 @@ async def preprocess_clinical_profiles_async(
                 json.dump(filter_report, f, indent=2)
             print(f"Filter results saved to {filter_output}")
 
-    # Create index mapping: output_index -> original_index
+    # Create index mapping: output_index -> original_index (pre-telehealth/filter)
     index_mapping = {
-        "mapping": {i: included_indices[i] for i in range(len(included_indices))},
-        "total_original": len(df),
+        "mapping": {
+            i: int(df.iloc[included_indices[i]]["__orig_idx"])
+            for i in range(len(included_indices))
+        },
+        "total_original": total_cases_original,
         "total_filtered": len(included_indices),
         "transcript_mapping": {
-            transcript_files[included_indices[i]].stem: included_indices[i]
+            transcript_files[included_indices[i]].stem: int(df.iloc[included_indices[i]]["__orig_idx"])
             for i in range(len(included_indices))
             if included_indices[i] < len(transcript_files)
         }
@@ -338,6 +409,7 @@ async def preprocess_clinical_profiles_async(
             print(f"  - {msg}")
 
     print(f"Profile building complete. Saved to {output_path}")
+    return [int(df.iloc[i]["__orig_idx"]) for i in included_indices]
 
 
 async def main_async():
@@ -418,15 +490,30 @@ async def main_async():
         default="data/preprocessed/index_mapping.json",
         help="Output file for index mapping"
     )
+    parser.add_argument(
+        "--only-telehealth",
+        action="store_true",
+        help="Process only telehealth-related cases"
+    )
 
     args = parser.parse_args()
 
     # Store included indices for consistency across BLP and profiles
     included_indices = None
+    telehealth_indices = None
+
+    if args.only_telehealth:
+        df_for_detection = pd.read_parquet(args.cases_file).reset_index(drop=True)
+        telehealth_indices = [
+            i for i, (_, row) in enumerate(df_for_detection.iterrows()) if _row_is_telehealth(row)
+        ]
+        print(f"\n[INFO] Telehealth selection requested: {len(telehealth_indices)} matched in source cases")
+        if not telehealth_indices:
+            print("[WARN] No telehealth cases detected; pipeline will process zero items.")
 
     if args.task in ["profiles", "both"]:
         print("\n=== Preprocessing Clinical Profiles (Async) ===")
-        await preprocess_clinical_profiles_async(
+        included_indices = await preprocess_clinical_profiles_async(
             cases_file=args.cases_file,
             transcripts_dir=args.transcripts_dir,
             output_dir=args.profile_output,
@@ -437,14 +524,8 @@ async def main_async():
             filter_model=args.filter_model,
             filter_output=args.filter_output if not args.no_filter else None,
             index_mapping_output=args.index_mapping_output if not args.no_filter else None,
+            only_telehealth=args.only_telehealth,
         )
-
-        # Load index mapping for BLP processing
-        if not args.no_filter and Path(args.index_mapping_output).exists():
-            with open(args.index_mapping_output) as f:
-                index_mapping = json.load(f)
-                included_indices = list(index_mapping["mapping"].values())
-                print(f"\nUsing {len(included_indices)} filtered indices for BLP extraction")
 
     if args.task in ["blp", "both"]:
         print("\n=== Preprocessing BLPs (Async) ===")
@@ -455,6 +536,7 @@ async def main_async():
             limit=args.limit,
             max_concurrent=args.max_concurrent,
             included_indices=included_indices,
+            preselected_indices=telehealth_indices if included_indices is None else None,
         )
 
     print("\n=== Preprocessing Complete ===")

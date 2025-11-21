@@ -23,6 +23,7 @@ def run_batch_training(
     profile_dir: str = "data/preprocessed/profiles",
     case_persona_mapping: Optional[str] = "data/preprocessed/case_persona_mapping.json",
     use_optimization: bool = False,
+    only_suitable_profiles: bool = False,
     verbose: bool = True
 ):
     """
@@ -36,6 +37,7 @@ def run_batch_training(
         profile_dir: Directory with preprocessed profile JSON files
         case_persona_mapping: Path to case-persona mapping file (for BLP reuse)
         use_optimization: If True, use DSPy optimization (MIPROv2)
+        only_suitable_profiles: If True, only use profiles flagged with conversation_suitability.is_suitable == True
         verbose: Print progress messages
     """
 
@@ -51,6 +53,7 @@ def run_batch_training(
         print(f"  Profile directory: {profile_dir}")
         print(f"  Case-persona mapping: {case_persona_mapping}")
         print(f"  Use optimization: {use_optimization}")
+        print(f"  Only suitable profiles: {only_suitable_profiles}")
         print()
 
     # Check if preprocessed directories exist
@@ -114,6 +117,7 @@ def run_batch_training(
             blp_dir=blp_dir,
             profile_dir=profile_dir,
             case_persona_mapping=case_persona_mapping,
+            only_suitable_profiles=only_suitable_profiles,
             verbose=verbose
         )
 
@@ -252,6 +256,11 @@ def main():
         help="Use DSPy optimization (MIPROv2) instead of simple rollouts"
     )
     parser.add_argument(
+        "--only-suitable-profiles",
+        action="store_true",
+        help="Use only profiles where conversation_suitability.is_suitable == True"
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress verbose output"
@@ -267,6 +276,7 @@ def main():
         profile_dir=args.profile_dir,
         case_persona_mapping=args.case_persona_mapping,
         use_optimization=args.optimize,
+        only_suitable_profiles=args.only_suitable_profiles,
         verbose=not args.quiet
     )
 
