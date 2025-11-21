@@ -29,4 +29,5 @@ data/temp/
 # Frontend Node Modules
 frontend/node_modules/
 
-
+data/clinical_cases/
+data/transcripts/
