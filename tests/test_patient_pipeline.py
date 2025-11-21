@@ -13,10 +13,12 @@ from personas.models import ConversationTurn
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "patient_case.json"
-_HAS_KEY = bool(os.environ.get("OPENAI_API_KEY"))
+_HAS_KEY = bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
 
-@pytest.mark.skipif(not _HAS_KEY, reason="Requires OPENAI_API_KEY for live LLM calls")
+@pytest.mark.skipif(
+    not _HAS_KEY, reason="Requires LLM API key (OPENAI_API_KEY or GEMINI_API_KEY)"
+)
 def test_pipeline_end_to_end_smoke() -> None:
     fixture = json.loads(FIXTURE_PATH.read_text())
     raw_transcript = fixture["raw_transcript"]
