@@ -8,6 +8,8 @@ type Message = {
 type BehavioralLinguisticProfile = Record<string, unknown>;
 type PatientProfile = {
   extra_attributes?: Record<string, string>;
+  id?: string;
+  primary_diagnoses?: string[];
   [key: string]: unknown;
 };
 
@@ -34,10 +36,29 @@ type CritiqueResult = {
   per_turn: TurnCritique[];
 };
 
+type SimulationTrace = {
+  session_id: string;
+  case_id: string;
+  transcript: { role: "doctor" | "patient"; content: string }[];
+  doctor_diagnosis: string;
+  ground_truth_diagnosis: string[];
+  turns_count: number;
+};
+
+type DoctorCritiqueResult = {
+  overall_score: number;
+  diagnostic_accuracy: number;
+  process_score: number;
+  critique_text: string;
+  successful_diagnosis: boolean;
+};
+
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 const App: React.FC = () => {
+  // Mode Toggle
+
   const [rawTranscript, setRawTranscript] = useState("");
   const [rawCase, setRawCase] = useState("");
   const [doctorInput, setDoctorInput] = useState("");
@@ -58,6 +79,14 @@ const App: React.FC = () => {
   const [busyTurn, setBusyTurn] = useState(false);
   const [busyCritique, setBusyCritique] = useState(false);
   const [busyOptimize, setBusyOptimize] = useState(false);
+  
+  // Doctor Mode State
+  const [busyDoctorSim, setBusyDoctorSim] = useState(false);
+  const [doctorTrace, setDoctorTrace] = useState<SimulationTrace | null>(null);
+  const [doctorCritique, setDoctorCritique] = useState<DoctorCritiqueResult | null>(null);
+  const [busyTraining, setBusyTraining] = useState(false);
+  const [trainingJobId, setTrainingJobId] = useState<string | null>(null);
+
   const [optimizeJobId, setOptimizeJobId] = useState<string | null>(null);
   const [optimizePercent, setOptimizePercent] = useState<number>(0);
   const [optimizeStatus, setOptimizeStatus] = useState<string | null>(null);
@@ -66,21 +95,26 @@ const App: React.FC = () => {
   const [critique, setCritique] = useState<CritiqueResult | null>(null);
   const [originalPrompt, setOriginalPrompt] = useState<string | null>(null);
   const [optimizedPrompt, setOptimizedPrompt] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState("");
   const [busyReset, setBusyReset] = useState(false);
+  const [doctorSimModel, setDoctorSimModel] = useState(defaultModel);
+  const [doctorPatientModel, setDoctorPatientModel] = useState(defaultModel);
+  const [simPatientModel, setSimPatientModel] = useState(defaultModel);
   const extraAttributes = patientObj?.extra_attributes;
   const hasExtraAttributes =
     extraAttributes && Object.keys(extraAttributes).length > 0;
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   // Frontend-adjustable models and token budgets
-  const [blpModel, setBlpModel] = useState("gemini-3-pro-preview");
+  const defaultModel = "openai/gpt-5.1-2025-11-13";
+  const [blpModel, setBlpModel] = useState(defaultModel);
   const [blpMaxTokens, setBlpMaxTokens] = useState<number>(2048);
-  const [patientModel, setPatientModel] = useState("gemini-3-pro-preview");
+  const [patientModel, setPatientModel] = useState(defaultModel);
   const [patientMaxTokens, setPatientMaxTokens] = useState<number>(1024);
-  const [critiqueModel, setCritiqueModel] = useState("gemini-3-pro-preview");
+  const [critiqueModel, setCritiqueModel] = useState(defaultModel);
   const [critiqueMaxTokens, setCritiqueMaxTokens] = useState<number>(2048);
   // GEPA knobs
-  const [gepaModel, setGepaModel] = useState("gemini-3-pro-preview");
+  const [gepaModel, setGepaModel] = useState(defaultModel);
   const [gepaReflectionMinibatchSize, setGepaReflectionMinibatchSize] = useState<number>(1);
   const [gepaCandidateSelection, setGepaCandidateSelection] = useState("pareto");
   const [gepaMaxMetricCalls, setGepaMaxMetricCalls] = useState<number>(5);
@@ -102,6 +136,7 @@ const App: React.FC = () => {
           transcript: rawTranscript,
           model: blpModel,
           max_tokens: blpMaxTokens,
+          api_key: apiKey || undefined,
         }),
         signal: controller.signal,
       });
@@ -298,6 +333,7 @@ const App: React.FC = () => {
           raw_case: rawCase,
           model: patientModel,
           max_tokens: patientMaxTokens,
+          api_key: apiKey || undefined,
         }),
         signal: controller.signal,
       });
@@ -349,6 +385,8 @@ const App: React.FC = () => {
       body: JSON.stringify({
         blp: blpObj,
         patient_profile: patientObj,
+        model: simPatientModel,
+        api_key: apiKey || undefined,
       }),
     });
 
@@ -406,7 +444,7 @@ const App: React.FC = () => {
     if (conversationEndRef.current) {
       conversationEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [conversation]);
+  }, [conversation, doctorTrace]);
 
   const handleResetChat = async () => {
     if (conversation.length > 0) {
@@ -434,6 +472,8 @@ const App: React.FC = () => {
         }
       }
       setConversation([]);
+      setDoctorTrace(null);
+      setDoctorCritique(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to reset chat.");
     } finally {
@@ -496,18 +536,93 @@ const App: React.FC = () => {
     }
   };
 
+  // Doctor Simulation Handlers
+  const handleRunDoctorSim = async () => {
+    if (!blpObj || !patientObj) {
+      setError("You need a BLP and Patient Profile first.");
+      return;
+    }
+    setBusyDoctorSim(true);
+    setError(null);
+    setDoctorTrace(null);
+    setDoctorCritique(null);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/simulate/doctor-session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                blp: blpObj,
+                patient_profile: patientObj,
+                max_turns: 10,
+                api_key: apiKey || undefined,
+            }),
+        });
+        if (!res.ok) throw new Error("Failed to run simulation");
+        const data = await res.json();
+        setDoctorTrace(data.trace);
+        setDoctorCritique(data.critique);
+    } catch(e) {
+        setError(e instanceof Error ? e.message : "Simulation failed");
+    } finally {
+        setBusyDoctorSim(false);
+    }
+  };
+
+  const handleTrainDoctor = async () => {
+    if (!blpObj || !patientObj) {
+      setError("You need a BLP and Patient Profile first.");
+      return;
+    }
+    setBusyTraining(true);
+    try {
+        const res = await fetch(`${API_BASE}/api/train/doctor`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                blp: blpObj,
+                patient_profile: patientObj,
+                iterations: 3,
+                case_id: patientObj.id || "manual_case",
+                api_key: apiKey || undefined,
+            }),
+        });
+        const data = await res.json();
+        setTrainingJobId(data.job_id);
+        alert("Training job started! Check server logs for JSONL trace output.");
+    } catch(e) {
+        setError("Failed to start training");
+    } finally {
+        setBusyTraining(false);
+    }
+  };
+
   return (
     <div className="app-root">
       <header className="app-header">
-        <div>
+        <div style={{ flex: 1 }}>
           <h1>Persona Generation Lab</h1>
-          <p>
-            Prototype UI that mirrors your architecture: transcript → BLP,
-            case → patient profile, both feeding a simulated patient.
-          </p>
+          <div style={{ marginTop: "0.5rem", fontSize: "0.9rem" }}>
+            Build BLP + Patient Profile, chat with the simulated patient, then run the Simulated Doctor & batch training on the same page.
+          </div>
         </div>
         <span className="badge">Node · React · Vite</span>
       </header>
+
+      <section className="panel" style={{ marginBottom: "1rem", display: "flex", gap: "1rem", alignItems: "center" }}>
+        <div style={{ flex: 1 }}>
+          <label className="field-label" htmlFor="api-key">API key (OpenAI / Gemini)</label>
+          <input
+            id="api-key"
+            type="password"
+            className="conversation-input"
+            placeholder="Enter API key to use for requests..."
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+        <span className="badge badge-soft">Used for all backend requests</span>
+      </section>
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -537,12 +652,25 @@ const App: React.FC = () => {
               <label className="field-label" htmlFor="blp-model">
                 BLP model
               </label>
-              <input
+              {/* Force style display block to ensure visibility */}
+              <select
                 id="blp-model"
                 className="conversation-input"
-                placeholder="e.g. gpt-4.1-mini"
+                style={{ display: 'block', width: '100%', marginBottom: '4px' }}
                 value={blpModel}
                 onChange={(e) => setBlpModel(e.target.value)}
+              >
+                <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (Preview)</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+              </select>
+              {/* Fallback text input for custom models */}
+              <input 
+                 className="conversation-input" 
+                 style={{marginTop: 4}}
+                 placeholder="Or type provider/model (e.g. anthropic/claude-3-opus)..." 
+                 value={blpModel} 
+                 onChange={(e) => setBlpModel(e.target.value)} 
               />
             </div>
             <div className="field-column">
@@ -609,12 +737,23 @@ const App: React.FC = () => {
               <label className="field-label" htmlFor="patient-model">
                 Patient profile model
               </label>
-              <input
+              <select
                 id="patient-model"
                 className="conversation-input"
-                placeholder="e.g. gpt-4.1-mini"
+                style={{ display: 'block', width: '100%', marginBottom: '4px' }}
                 value={patientModel}
                 onChange={(e) => setPatientModel(e.target.value)}
+              >
+                <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (Preview)</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+              </select>
+               <input 
+                 className="conversation-input" 
+                 style={{marginTop: 4}}
+                 placeholder="Or type provider/model..." 
+                 value={patientModel} 
+                 onChange={(e) => setPatientModel(e.target.value)} 
               />
             </div>
             <div className="field-column">
@@ -691,196 +830,116 @@ const App: React.FC = () => {
 
         </section>
 
-        {/* Right: Simulated patient conversation */}
+        {/* Right: Chat + Doctor Training on one page */}
         <section className="panel panel-span">
-          <h2>Simulated Patient</h2>
-          <p className="panel-subtitle">
-            BLP + Patient profile + constraints &rarr; in-role patient behavior.
-          </p>
+          <>
+            <h2>Simulated Patient (interactive)</h2>
+            <p className="panel-subtitle">
+              BLP + Patient profile + constraints &rarr; in-role patient behavior.
+            </p>
 
-          <div className="conversation-card">
-            <div className="conversation-header">
-              <div>
-                <div className="conversation-title">Training encounter</div>
-                <div className="conversation-caption">
-                  Talk as the doctor. The agent stays maximally faithful to the
-                  profiles you provide.
+            <div className="conversation-card">
+              <div className="conversation-header">
+                <div>
+                  <div className="conversation-title">Training encounter</div>
+                  <div className="conversation-caption">
+                    Talk as the doctor. The agent stays maximally faithful to the
+                    profiles you provide.
+                  </div>
                 </div>
+                <span className="badge badge-soft">
+                  {sessionId ? "Session active" : "Awaiting profiles"}
+                </span>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <select
+                    className="conversation-input"
+                    value={simPatientModel}
+                    onChange={(e) => setSimPatientModel(e.target.value)}
+                    style={{ minWidth: 200 }}
+                  >
+                    <option value={defaultModel}>Sim patient model: GPT-5.1</option>
+                    <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                    <option value="openai/gpt-4o">GPT-4o</option>
+                  </select>
+                </div>
+                <button
+                  className="secondary-button"
+                  onClick={handleResetChat}
+                  disabled={busyReset || busyTurn}
+                  style={{ marginLeft: 12 }}
+                >
+                  {busyReset ? "Resetting..." : "Reset chat"}
+                </button>
               </div>
-              <span className="badge badge-soft">
-                {sessionId ? "Session active" : "Awaiting profiles"}
-              </span>
-              <button
-                className="secondary-button"
-                onClick={handleResetChat}
-                disabled={busyReset || busyTurn}
-                style={{ marginLeft: 12 }}
-              >
-                {busyReset ? "Resetting..." : "Reset chat"}
-              </button>
-            </div>
 
-            <div className="conversation-body">
-              {conversation.length === 0 ? (
-                <div className="placeholder">
-                  Start typing as the clinician. Once the backend is wired up,
-                  you&apos;ll see realistic patient turns here driven by the BLP
-                  and patient profile.
-                </div>
-              ) : (
-                <>
-                  {conversation.map((msg, idx) => (
-                    <div
-                      key={idx}
-                      className={`bubble bubble-${msg.role}`}
-                    >
-                      <div className="bubble-role">
-                        {msg.role === "doctor" ? "Doctor" : "Patient"}
+              <div className="conversation-body">
+                {conversation.length === 0 ? (
+                  <div className="placeholder">
+                    Start typing as the clinician. Once the backend is wired up,
+                    you&apos;ll see realistic patient turns here driven by the BLP
+                    and patient profile.
+                  </div>
+                ) : (
+                  <>
+                    {conversation.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        className={`bubble bubble-${msg.role}`}
+                      >
+                        <div className="bubble-role">
+                          {msg.role === "doctor" ? "Doctor" : "Patient"}
+                        </div>
+                        <div className="bubble-text">{msg.content}</div>
                       </div>
-                      <div className="bubble-text">{msg.content}</div>
-                    </div>
-                  ))}
-                  <div ref={conversationEndRef} />
-                </>
-              )}
+                    ))}
+                    <div ref={conversationEndRef} />
+                  </>
+                )}
+              </div>
+
+              <div className="conversation-input-row">
+                <input
+                  type="text"
+                  className="conversation-input"
+                  placeholder="Ask the patient something as the doctor..."
+                  value={doctorInput}
+                  onChange={(e) => setDoctorInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "Enter" &&
+                      (e.ctrlKey || e.metaKey || !e.shiftKey)
+                    ) {
+                      e.preventDefault();
+                      handleSendTurn();
+                    }
+                  }}
+                />
+                <button
+                  className="primary-button"
+                  onClick={handleSendTurn}
+                  disabled={busyTurn || !doctorInput.trim()}
+                >
+                  {busyTurn ? "Thinking..." : "Send"}
+                </button>
+              </div>
             </div>
 
-            <div className="conversation-input-row">
-              <input
-                type="text"
-                className="conversation-input"
-                placeholder="Ask the patient something as the doctor..."
-                value={doctorInput}
-                onChange={(e) => setDoctorInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    (e.ctrlKey || e.metaKey || !e.shiftKey)
-                  ) {
-                    e.preventDefault();
-                    handleSendTurn();
-                  }
-                }}
-              />
-              <button
-                className="primary-button"
-                onClick={handleSendTurn}
-                disabled={busyTurn || !doctorInput.trim()}
-              >
-                {busyTurn ? "Thinking..." : "Send"}
-              </button>
-            </div>
-          </div>
-
-          <div className="critique-controls">
-            <div className="field-row" style={{ marginBottom: 8 }}>
-              <div className="field-column">
-                <label className="field-label" htmlFor="gepa-model">
-                  GEPA model
-                </label>
-                <input
-                  id="gepa-model"
-                  className="conversation-input"
-                  placeholder="e.g. gpt-4.1-mini"
-                  value={gepaModel}
-                  onChange={(e) => setGepaModel(e.target.value)}
-                />
-              </div>
-              <div className="field-column">
-                <label className="field-label" htmlFor="gepa-reflection-minibatch">
-                  Reflection minibatch size
-                </label>
-                <input
-                  id="gepa-reflection-minibatch"
-                  type="number"
-                  className="conversation-input"
-                  placeholder="e.g. 3"
-                  value={gepaReflectionMinibatchSize}
-                  onChange={(e) =>
-                    setGepaReflectionMinibatchSize(Number(e.target.value) || 0)
-                  }
-                />
-              </div>
-              <div className="field-column">
-                <label className="field-label" htmlFor="gepa-max-metric-calls">
-                  Max metric calls
-                </label>
-                <input
-                  id="gepa-max-metric-calls"
-                  type="number"
-                  className="conversation-input"
-                  placeholder="e.g. 200"
-                  value={gepaMaxMetricCalls}
-                  onChange={(e) =>
-                    setGepaMaxMetricCalls(Number(e.target.value) || 0)
-                  }
-                />
-              </div>
-            </div>
-            <div className="field-row" style={{ marginBottom: 8 }}>
-              <div className="field-column">
-                <label className="field-label" htmlFor="gepa-candidate-selection">
-                  Candidate selection strategy
-                </label>
-                <input
-                  id="gepa-candidate-selection"
-                  className="conversation-input"
-                  placeholder="e.g. pareto"
-                  value={gepaCandidateSelection}
-                  onChange={(e) => setGepaCandidateSelection(e.target.value)}
-                />
-              </div>
-              <div className="field-column">
-                <span className="field-label">GEPA options</span>
-                <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={gepaUseMerge}
-                      onChange={(e) => setGepaUseMerge(e.target.checked)}
-                    />
-                    use_merge
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={gepaTrackStats}
-                      onChange={(e) => setGepaTrackStats(e.target.checked)}
-                    />
-                    track_stats
-                  </label>
+            <div className="critique-controls">
+              <div className="field-row" style={{ marginBottom: 8 }}>
+                <div className="field-column">
+                  <label className="field-label">Critique model</label>
+                  <select
+                    className="conversation-input"
+                    style={{ display: "block", width: "100%", marginBottom: 4 }}
+                    value={critiqueModel}
+                    onChange={(e) => setCritiqueModel(e.target.value)}
+                  >
+                    <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (default)</option>
+                    <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                    <option value="openai/gpt-4o">GPT-4o</option>
+                  </select>
                 </div>
               </div>
-            </div>
-            <div className="field-row" style={{ marginBottom: 8 }}>
-              <div className="field-column">
-                <label className="field-label" htmlFor="critique-model">
-                  Critique model
-                </label>
-                <input
-                  id="critique-model"
-                  className="conversation-input"
-                  placeholder="e.g. gpt-4.1-mini"
-                  value={critiqueModel}
-                  onChange={(e) => setCritiqueModel(e.target.value)}
-                />
-              </div>
-              <div className="field-column">
-                <label className="field-label" htmlFor="critique-max-tokens">
-                  Critique max tokens
-                </label>
-                <input
-                  id="critique-max-tokens"
-                  type="number"
-                  className="conversation-input"
-                  placeholder="e.g. 2048"
-                  value={critiqueMaxTokens}
-                  onChange={(e) =>
-                    setCritiqueMaxTokens(Number(e.target.value) || 0)
-                  }
-                />
-              </div>
-            </div>
             <button
               className="secondary-button"
               onClick={handleRunCritique}
@@ -893,83 +952,136 @@ const App: React.FC = () => {
               onClick={handleEndAndOptimize}
               disabled={busyOptimize}
               style={{ marginLeft: 12 }}
-            >
-              {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
-            </button>
-            {busyOptimize && optimizeJobId && (
-              <button
-                className="secondary-button"
-                onClick={handleCancelOptimize}
-                style={{ marginLeft: 8 }}
               >
-                Stop Optimize
+                {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
               </button>
-            )}
-            {busyOptimize && (
-              <div style={{ marginTop: 8 }}>
-                <div className="progress">
-                  <div
-                    className="progress-bar"
-                    style={{ width: `${optimizePercent}%` }}
-                  />
-                </div>
-                <div className="progress-label">
-                  {optimizeStatus ?? "running"} · {optimizePercent}%
-                </div>
-              </div>
-            )}
-          </div>
-
-          {critique && (
-            <div className="panel-output">
-              <div className="panel-output-header">Critique</div>
-              <div className="panel-output-body">
-                <p>{critique.overall_comment}</p>
-                <p>
-                  <strong>Clinical alignment:</strong>{" "}
-                  {(critique.clinical_alignment.score * 100).toFixed(0)}% –{" "}
-                  {critique.clinical_alignment.label}
-                </p>
-                <p>
-                  <strong>Persona alignment:</strong>{" "}
-                  {(critique.persona_alignment.score * 100).toFixed(0)}% –{" "}
-                  {critique.persona_alignment.label}
-                </p>
-                {critique.safety_flags.length > 0 && (
-                  <p>
-                    <strong>Safety flags:</strong> {critique.safety_flags.join("; ")}
-                  </p>
-                )}
-                {critique.suggested_improvements.length > 0 && (
-                  <div>
-                    <strong>Suggestions:</strong>
-                    <ul>
-                      {critique.suggested_improvements.map((s, idx) => (
-                        <li key={idx}>{s}</li>
-                      ))}
-                    </ul>
+              {busyOptimize && optimizeJobId && (
+                <button
+                  className="secondary-button"
+                  onClick={handleCancelOptimize}
+                  style={{ marginLeft: 8 }}
+                >
+                  Stop Optimize
+                </button>
+              )}
+              {busyOptimize && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="progress">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${optimizePercent}%` }}
+                    />
                   </div>
-                )}
+                  <div className="progress-label">
+                    {optimizeStatus ?? "running"} · {optimizePercent}%
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {critique && (
+              <div className="panel-output">
+                <div className="panel-output-header">Critique</div>
+                <div className="panel-output-body">
+                  <p>{critique.overall_comment}</p>
+                  <p>
+                    <strong>Clinical alignment:</strong>{" "}
+                    {(critique.clinical_alignment.score * 100).toFixed(0)}% –{" "}
+                    {critique.clinical_alignment.label}
+                  </p>
+                  <p>
+                    <strong>Persona alignment:</strong>{" "}
+                    {(critique.persona_alignment.score * 100).toFixed(0)}% –{" "}
+                    {critique.persona_alignment.label}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Doctor Training Section (always visible) */}
+              <div style={{ marginTop: "2rem", borderTop: "1px solid #eee", paddingTop: "1.5rem" }}>
+                <h2>Simulated Doctor Agent</h2>
+                <p className="panel-subtitle">
+                    Automated Doctor vs Patient loop to generate training traces.
+                </p>
+
+              <div className="conversation-card">
+                  <div className="conversation-header" style={{ alignItems: "center" }}>
+                      <div style={{ maxWidth: "65%" }}>
+                          <div className="conversation-title">Simulation View</div>
+                          <div className="conversation-caption">
+                              Watch the Simulated Doctor interview the Patient autonomously.
+                          </div>
+                      </div>
+                      <button 
+                          className="primary-button"
+                          onClick={handleRunDoctorSim}
+                          disabled={busyDoctorSim}
+                          style={{ minWidth: 160 }}
+                      >
+                          {busyDoctorSim ? "Running Simulation..." : "Run Auto-Sim"}
+                      </button>
+                  </div>
+
+                  <div className="conversation-body" style={{ minHeight: 180 }}>
+                      { !doctorTrace ? (
+                          <div className="placeholder">
+                              Click "Run Auto-Sim" to start an automated session.
+                          </div>
+                      ) : (
+                          <>
+                              {doctorTrace.transcript.map((msg, idx) => (
+                                  <div key={idx} className={`bubble bubble-${msg.role}`}>
+                                      <div className="bubble-role">
+                                          {msg.role === "doctor" ? "Sim Doctor" : "Sim Patient"}
+                                      </div>
+                                      <div className="bubble-text">{msg.content}</div>
+                                  </div>
+                              ))}
+                              <div className="bubble bubble-system">
+                                  <div className="bubble-role">SYSTEM</div>
+                                  <div className="bubble-text">
+                                      <strong>Final Diagnosis:</strong> {doctorTrace.doctor_diagnosis}
+                                  </div>
+                              </div>
+                              <div ref={conversationEndRef} />
+                          </>
+                      )}
+                  </div>
+              </div>
+
+              { doctorCritique && (
+                  <div className="panel-output">
+                      <div className="panel-output-header">
+                          Reward Signal (Score: {(doctorCritique.overall_score * 100).toFixed(0)}%)
+                      </div>
+                      <div className="panel-output-body">
+                          <div style={{display: 'flex', gap: '1rem', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap'}}>
+                              <div>
+                                  <strong>Diagnostic Accuracy:</strong> {(doctorCritique.diagnostic_accuracy * 100).toFixed(0)}%
+                              </div>
+                              <div>
+                                  <strong>Process Score:</strong> {(doctorCritique.process_score * 100).toFixed(0)}%
+                              </div>
+                          </div>
+                          <p>{doctorCritique.critique_text}</p>
+                      </div>
+                  </div>
+              )}
+
+              <div className="critique-controls" style={{marginTop: '1rem', borderTop: '1px solid #eee', paddingTop: '1rem'}}>
+                  <h3>Batch Training</h3>
+                  <p>Run multiple simulations to collect traces for GRPO.</p>
+                  <button 
+                      className="primary-button"
+                      onClick={handleTrainDoctor}
+                      disabled={busyTraining}
+                  >
+                      {busyTraining ? "Job Queued..." : "Start Batch Training Job"}
+                  </button>
               </div>
             </div>
-          )}
-          {(originalPrompt || optimizedPrompt) && (
-            <div className="panel-output">
-              <div className="panel-output-header">
-                BLP Prompt: Original vs Optimized
-              </div>
-              <div className="panel-output-body blp-prompt-grid">
-                <div>
-                  <div className="panel-output-subheader">Original</div>
-                  <pre className="panel-pre">{originalPrompt ?? "—"}</pre>
-                </div>
-                <div>
-                  <div className="panel-output-subheader">Optimized</div>
-                  <pre className="panel-pre">{optimizedPrompt ?? "—"}</pre>
-                </div>
-              </div>
-            </div>
-          )}
+          </>
         </section>
       </main>
     </div>

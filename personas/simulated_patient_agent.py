@@ -25,7 +25,7 @@ class SimulatedPatientAgent:
     blp: BehavioralLinguisticProfile
     patient_profile: PatientProfile
     constraints: Optional[ConversationConstraints] = None
-    model: str = get_model_for_agent("simulated_patient", "gemini-3-pro-preview")
+    model: str = get_model_for_agent("simulated_patient", "gemini/gemini-3-pro-preview")
     max_tokens: int = get_max_tokens_for_agent("simulated_patient", 512)
 
     def __post_init__(self) -> None:
