@@ -58,7 +58,6 @@ const API_BASE =
 
 const App: React.FC = () => {
   // Mode Toggle
-  const [doctorMode, setDoctorMode] = useState(false);
 
   const [rawTranscript, setRawTranscript] = useState("");
   const [rawCase, setRawCase] = useState("");
@@ -103,14 +102,15 @@ const App: React.FC = () => {
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   // Frontend-adjustable models and token budgets
-  const [blpModel, setBlpModel] = useState("gemini/gemini-3-pro-preview");
+  const defaultModel = "openai/gpt-5.1-2025-11-13";
+  const [blpModel, setBlpModel] = useState(defaultModel);
   const [blpMaxTokens, setBlpMaxTokens] = useState<number>(2048);
-  const [patientModel, setPatientModel] = useState("gemini/gemini-3-pro-preview");
+  const [patientModel, setPatientModel] = useState(defaultModel);
   const [patientMaxTokens, setPatientMaxTokens] = useState<number>(1024);
-  const [critiqueModel, setCritiqueModel] = useState("gemini/gemini-3-pro-preview");
+  const [critiqueModel, setCritiqueModel] = useState(defaultModel);
   const [critiqueMaxTokens, setCritiqueMaxTokens] = useState<number>(2048);
   // GEPA knobs
-  const [gepaModel, setGepaModel] = useState("gemini/gemini-3-pro-preview");
+  const [gepaModel, setGepaModel] = useState(defaultModel);
   const [gepaReflectionMinibatchSize, setGepaReflectionMinibatchSize] = useState<number>(1);
   const [gepaCandidateSelection, setGepaCandidateSelection] = useState("pareto");
   const [gepaMaxMetricCalls, setGepaMaxMetricCalls] = useState<number>(5);
@@ -592,21 +592,8 @@ const App: React.FC = () => {
       <header className="app-header">
         <div style={{ flex: 1 }}>
           <h1>Persona Generation Lab</h1>
-          <div style={{display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '0.5rem'}}>
-            <button 
-                className={!doctorMode ? "badge badge-active" : "badge"} 
-                onClick={() => setDoctorMode(false)}
-                style={{ cursor: 'pointer', border: 'none' }}
-            >
-                Interactive Chat
-            </button>
-            <button 
-                className={doctorMode ? "badge badge-active" : "badge"} 
-                onClick={() => setDoctorMode(true)}
-                style={{ cursor: 'pointer', border: 'none' }}
-            >
-                Doctor Training
-            </button>
+          <div style={{ marginTop: "0.5rem", fontSize: "0.9rem" }}>
+            Build BLP + Patient Profile, chat with the simulated patient, then run the Simulated Doctor & batch training on the same page.
           </div>
         </div>
         <span className="badge">Node · React · Vite</span>
@@ -818,240 +805,258 @@ const App: React.FC = () => {
 
         </section>
 
-        {/* Right: Shared Chat Panel (Interactive or Doctor Training) */}
+        {/* Right: Chat + Doctor Training on one page */}
         <section className="panel panel-span">
-          { !doctorMode ? (
-            /* INTERACTIVE MODE */
-            <>
-              <h2>Simulated Patient</h2>
-              <p className="panel-subtitle">
-                BLP + Patient profile + constraints &rarr; in-role patient behavior.
-              </p>
+          <>
+            <h2>Simulated Patient (interactive)</h2>
+            <p className="panel-subtitle">
+              BLP + Patient profile + constraints &rarr; in-role patient behavior.
+            </p>
 
-              <div className="conversation-card">
-                <div className="conversation-header">
-                  <div>
-                    <div className="conversation-title">Training encounter</div>
-                    <div className="conversation-caption">
-                      Talk as the doctor. The agent stays maximally faithful to the
-                      profiles you provide.
-                    </div>
+            <div className="conversation-card">
+              <div className="conversation-header">
+                <div>
+                  <div className="conversation-title">Training encounter</div>
+                  <div className="conversation-caption">
+                    Talk as the doctor. The agent stays maximally faithful to the
+                    profiles you provide.
                   </div>
-                  <span className="badge badge-soft">
-                    {sessionId ? "Session active" : "Awaiting profiles"}
-                  </span>
-                  <button
-                    className="secondary-button"
-                    onClick={handleResetChat}
-                    disabled={busyReset || busyTurn}
-                    style={{ marginLeft: 12 }}
-                  >
-                    {busyReset ? "Resetting..." : "Reset chat"}
-                  </button>
                 </div>
-
-                <div className="conversation-body">
-                  {conversation.length === 0 ? (
-                    <div className="placeholder">
-                      Start typing as the clinician. Once the backend is wired up,
-                      you&apos;ll see realistic patient turns here driven by the BLP
-                      and patient profile.
-                    </div>
-                  ) : (
-                    <>
-                      {conversation.map((msg, idx) => (
-                        <div
-                          key={idx}
-                          className={`bubble bubble-${msg.role}`}
-                        >
-                          <div className="bubble-role">
-                            {msg.role === "doctor" ? "Doctor" : "Patient"}
-                          </div>
-                          <div className="bubble-text">{msg.content}</div>
-                        </div>
-                      ))}
-                      <div ref={conversationEndRef} />
-                    </>
-                  )}
-                </div>
-
-                <div className="conversation-input-row">
-                  <input
-                    type="text"
-                    className="conversation-input"
-                    placeholder="Ask the patient something as the doctor..."
-                    value={doctorInput}
-                    onChange={(e) => setDoctorInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (
-                        e.key === "Enter" &&
-                        (e.ctrlKey || e.metaKey || !e.shiftKey)
-                      ) {
-                        e.preventDefault();
-                        handleSendTurn();
-                      }
-                    }}
-                  />
-                  <button
-                    className="primary-button"
-                    onClick={handleSendTurn}
-                    disabled={busyTurn || !doctorInput.trim()}
-                  >
-                    {busyTurn ? "Thinking..." : "Send"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="critique-controls">
-                <div className="field-row" style={{ marginBottom: 8 }}>
-                    {/* GEPA Knobs reused for Critique */}
-                    <div className="field-column">
-                        <label className="field-label">Critique Model</label>
-                        <input className="conversation-input" value={critiqueModel} onChange={(e) => setCritiqueModel(e.target.value)} />
-                    </div>
-                </div>
+                <span className="badge badge-soft">
+                  {sessionId ? "Session active" : "Awaiting profiles"}
+                </span>
                 <button
                   className="secondary-button"
-                  onClick={handleRunCritique}
-                  disabled={busyCritique}
-                >
-                  {busyCritique ? "Critiquing..." : "Run critique on conversation"}
-                </button>
-                <button
-                  className="primary-button"
-                  onClick={handleEndAndOptimize}
-                  disabled={busyOptimize}
+                  onClick={handleResetChat}
+                  disabled={busyReset || busyTurn}
                   style={{ marginLeft: 12 }}
                 >
-                  {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
+                  {busyReset ? "Resetting..." : "Reset chat"}
                 </button>
-                {busyOptimize && optimizeJobId && (
-                  <button
-                    className="secondary-button"
-                    onClick={handleCancelOptimize}
-                    style={{ marginLeft: 8 }}
-                  >
-                    Stop Optimize
-                  </button>
-                )}
-                {busyOptimize && (
-                  <div style={{ marginTop: 8 }}>
-                    <div className="progress">
-                      <div
-                        className="progress-bar"
-                        style={{ width: `${optimizePercent}%` }}
-                      />
-                    </div>
-                    <div className="progress-label">
-                      {optimizeStatus ?? "running"} · {optimizePercent}%
-                    </div>
+              </div>
+
+              <div className="conversation-body">
+                {conversation.length === 0 ? (
+                  <div className="placeholder">
+                    Start typing as the clinician. Once the backend is wired up,
+                    you&apos;ll see realistic patient turns here driven by the BLP
+                    and patient profile.
                   </div>
+                ) : (
+                  <>
+                    {conversation.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        className={`bubble bubble-${msg.role}`}
+                      >
+                        <div className="bubble-role">
+                          {msg.role === "doctor" ? "Doctor" : "Patient"}
+                        </div>
+                        <div className="bubble-text">{msg.content}</div>
+                      </div>
+                    ))}
+                    <div ref={conversationEndRef} />
+                  </>
                 )}
               </div>
 
-              {critique && (
-                <div className="panel-output">
-                  <div className="panel-output-header">Critique</div>
-                  <div className="panel-output-body">
-                    <p>{critique.overall_comment}</p>
-                    <p>
-                      <strong>Clinical alignment:</strong>{" "}
-                      {(critique.clinical_alignment.score * 100).toFixed(0)}% –{" "}
-                      {critique.clinical_alignment.label}
-                    </p>
-                    <p>
-                      <strong>Persona alignment:</strong>{" "}
-                      {(critique.persona_alignment.score * 100).toFixed(0)}% –{" "}
-                      {critique.persona_alignment.label}
-                    </p>
+              <div className="conversation-input-row">
+                <input
+                  type="text"
+                  className="conversation-input"
+                  placeholder="Ask the patient something as the doctor..."
+                  value={doctorInput}
+                  onChange={(e) => setDoctorInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "Enter" &&
+                      (e.ctrlKey || e.metaKey || !e.shiftKey)
+                    ) {
+                      e.preventDefault();
+                      handleSendTurn();
+                    }
+                  }}
+                />
+                <button
+                  className="primary-button"
+                  onClick={handleSendTurn}
+                  disabled={busyTurn || !doctorInput.trim()}
+                >
+                  {busyTurn ? "Thinking..." : "Send"}
+                </button>
+              </div>
+            </div>
+
+            <div className="critique-controls">
+              <div className="field-row" style={{ marginBottom: 8 }}>
+                  <div className="field-column">
+                      <label className="field-label">Critique Model</label>
+                      <input className="conversation-input" value={critiqueModel} onChange={(e) => setCritiqueModel(e.target.value)} />
+                  </div>
+              </div>
+            <div className="field-row" style={{ marginBottom: 8 }}>
+              <div className="field-column">
+                <label className="field-label">Critique model</label>
+                <select
+                  className="conversation-input"
+                  style={{ display: "block", width: "100%", marginBottom: 4 }}
+                  value={critiqueModel}
+                  onChange={(e) => setCritiqueModel(e.target.value)}
+                >
+                  <option value="openai/gpt-5.1-2025-11-13">GPT-5.1 (default)</option>
+                  <option value="gemini/gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                  <option value="openai/gpt-4o">GPT-4o</option>
+                </select>
+                <input
+                  className="conversation-input"
+                  placeholder="Or type provider/model…"
+                  value={critiqueModel}
+                  onChange={(e) => setCritiqueModel(e.target.value)}
+                />
+              </div>
+            </div>
+            <button
+              className="secondary-button"
+              onClick={handleRunCritique}
+              disabled={busyCritique}
+            >
+              {busyCritique ? "Critiquing..." : "Run critique on conversation"}
+            </button>
+            <button
+              className="primary-button"
+              onClick={handleEndAndOptimize}
+              disabled={busyOptimize}
+              style={{ marginLeft: 12 }}
+              >
+                {busyOptimize ? "Optimizing..." : "End & Optimize BLP Prompt"}
+              </button>
+              {busyOptimize && optimizeJobId && (
+                <button
+                  className="secondary-button"
+                  onClick={handleCancelOptimize}
+                  style={{ marginLeft: 8 }}
+                >
+                  Stop Optimize
+                </button>
+              )}
+              {busyOptimize && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="progress">
+                    <div
+                      className="progress-bar"
+                      style={{ width: `${optimizePercent}%` }}
+                    />
+                  </div>
+                  <div className="progress-label">
+                    {optimizeStatus ?? "running"} · {optimizePercent}%
                   </div>
                 </div>
               )}
-            </>
-          ) : (
-            /* DOCTOR TRAINING MODE */
-            <>
+            </div>
+
+            {critique && (
+              <div className="panel-output">
+                <div className="panel-output-header">Critique</div>
+                <div className="panel-output-body">
+                  <p>{critique.overall_comment}</p>
+                  <p>
+                    <strong>Clinical alignment:</strong>{" "}
+                    {(critique.clinical_alignment.score * 100).toFixed(0)}% –{" "}
+                    {critique.clinical_alignment.label}
+                  </p>
+                  <p>
+                    <strong>Persona alignment:</strong>{" "}
+                    {(critique.persona_alignment.score * 100).toFixed(0)}% –{" "}
+                    {critique.persona_alignment.label}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Doctor Training Section (always visible) */}
+              <div style={{ marginTop: "2rem", borderTop: "1px solid #eee", paddingTop: "1.5rem" }}>
                 <h2>Simulated Doctor Agent</h2>
                 <p className="panel-subtitle">
                     Automated Doctor vs Patient loop to generate training traces.
                 </p>
 
-                <div className="conversation-card">
-                    <div className="conversation-header">
-                        <div>
-                            <div className="conversation-title">Simulation View</div>
-                            <div className="conversation-caption">
-                                Watch the Simulated Doctor interview the Patient autonomously.
-                            </div>
-                        </div>
-                        <button 
-                            className="primary-button"
-                            onClick={handleRunDoctorSim}
-                            disabled={busyDoctorSim}
-                        >
-                            {busyDoctorSim ? "Running Simulation..." : "Run Auto-Sim"}
-                        </button>
-                    </div>
+              <div className="conversation-card">
+                  <div className="conversation-header" style={{ alignItems: "center" }}>
+                      <div style={{ maxWidth: "65%" }}>
+                          <div className="conversation-title">Simulation View</div>
+                          <div className="conversation-caption">
+                              Watch the Simulated Doctor interview the Patient autonomously.
+                          </div>
+                      </div>
+                      <button 
+                          className="primary-button"
+                          onClick={handleRunDoctorSim}
+                          disabled={busyDoctorSim}
+                          style={{ minWidth: 160 }}
+                      >
+                          {busyDoctorSim ? "Running Simulation..." : "Run Auto-Sim"}
+                      </button>
+                  </div>
 
-                    <div className="conversation-body">
-                        { !doctorTrace ? (
-                            <div className="placeholder">
-                                Click "Run Auto-Sim" to start an automated session.
-                            </div>
-                        ) : (
-                            <>
-                                {doctorTrace.transcript.map((msg, idx) => (
-                                    <div key={idx} className={`bubble bubble-${msg.role}`}>
-                                        <div className="bubble-role">
-                                            {msg.role === "doctor" ? "Sim Doctor" : "Sim Patient"}
-                                        </div>
-                                        <div className="bubble-text">{msg.content}</div>
-                                    </div>
-                                ))}
-                                <div className="bubble bubble-system">
-                                    <div className="bubble-role">SYSTEM</div>
-                                    <div className="bubble-text">
-                                        <strong>Final Diagnosis:</strong> {doctorTrace.doctor_diagnosis}
-                                    </div>
-                                </div>
-                                <div ref={conversationEndRef} />
-                            </>
-                        )}
-                    </div>
-                </div>
+                  <div className="conversation-body" style={{ minHeight: 180 }}>
+                      { !doctorTrace ? (
+                          <div className="placeholder">
+                              Click "Run Auto-Sim" to start an automated session.
+                          </div>
+                      ) : (
+                          <>
+                              {doctorTrace.transcript.map((msg, idx) => (
+                                  <div key={idx} className={`bubble bubble-${msg.role}`}>
+                                      <div className="bubble-role">
+                                          {msg.role === "doctor" ? "Sim Doctor" : "Sim Patient"}
+                                      </div>
+                                      <div className="bubble-text">{msg.content}</div>
+                                  </div>
+                              ))}
+                              <div className="bubble bubble-system">
+                                  <div className="bubble-role">SYSTEM</div>
+                                  <div className="bubble-text">
+                                      <strong>Final Diagnosis:</strong> {doctorTrace.doctor_diagnosis}
+                                  </div>
+                              </div>
+                              <div ref={conversationEndRef} />
+                          </>
+                      )}
+                  </div>
+              </div>
 
-                { doctorCritique && (
-                    <div className="panel-output">
-                        <div className="panel-output-header">
-                            Reward Signal (Score: {(doctorCritique.overall_score * 100).toFixed(0)}%)
-                        </div>
-                        <div className="panel-output-body">
-                            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '1rem'}}>
-                                <div>
-                                    <strong>Diagnostic Accuracy:</strong> {(doctorCritique.diagnostic_accuracy * 100).toFixed(0)}%
-                                </div>
-                                <div>
-                                    <strong>Process Score:</strong> {(doctorCritique.process_score * 100).toFixed(0)}%
-                                </div>
-                            </div>
-                            <p>{doctorCritique.critique_text}</p>
-                        </div>
-                    </div>
-                )}
+              { doctorCritique && (
+                  <div className="panel-output">
+                      <div className="panel-output-header">
+                          Reward Signal (Score: {(doctorCritique.overall_score * 100).toFixed(0)}%)
+                      </div>
+                      <div className="panel-output-body">
+                          <div style={{display: 'flex', gap: '1rem', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap'}}>
+                              <div>
+                                  <strong>Diagnostic Accuracy:</strong> {(doctorCritique.diagnostic_accuracy * 100).toFixed(0)}%
+                              </div>
+                              <div>
+                                  <strong>Process Score:</strong> {(doctorCritique.process_score * 100).toFixed(0)}%
+                              </div>
+                          </div>
+                          <p>{doctorCritique.critique_text}</p>
+                      </div>
+                  </div>
+              )}
 
-                <div className="critique-controls" style={{marginTop: '1rem', borderTop: '1px solid #eee', paddingTop: '1rem'}}>
-                    <h3>Batch Training</h3>
-                    <p>Run multiple simulations to collect traces for GRPO.</p>
-                    <button 
-                        className="primary-button"
-                        onClick={handleTrainDoctor}
-                        disabled={busyTraining}
-                    >
-                        {busyTraining ? "Job Queued..." : "Start Batch Training Job"}
-                    </button>
-                </div>
-            </>
-          )}
+              <div className="critique-controls" style={{marginTop: '1rem', borderTop: '1px solid #eee', paddingTop: '1rem'}}>
+                  <h3>Batch Training</h3>
+                  <p>Run multiple simulations to collect traces for GRPO.</p>
+                  <button 
+                      className="primary-button"
+                      onClick={handleTrainDoctor}
+                      disabled={busyTraining}
+                  >
+                      {busyTraining ? "Job Queued..." : "Start Batch Training Job"}
+                  </button>
+              </div>
+            </div>
+          </>
         </section>
       </main>
     </div>
@@ -1059,5 +1064,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
-
