@@ -20,6 +20,8 @@ dependencies = [
   "dspy-ai>=2.4.0",
   "PyYAML>=6.0.0",
   "google-generativeai>=0.8.4",
+  "pandas>=2.2.0",
+  "pyarrow>=18.0.0",
 ]
 
 

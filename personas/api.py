@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Any, Optional
 from uuid import uuid4
+from pathlib import Path
 import io
 from contextlib import redirect_stdout, redirect_stderr
 import os
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import threading
 from dotenv import load_dotenv
+import pandas as pd
 
 load_dotenv()
 
@@ -39,7 +41,7 @@ from .blp_prompt_optimization import (
     configure_dspy,
 )
 from .config import get_value
-from .train_doctor import DoctorTrainingCase, run_training_rollouts
+from .train_doctor import DoctorTrainingCase, log_trace_for_grpo, run_training_rollouts
 
 
 app = FastAPI(
@@ -176,11 +178,107 @@ class TrainDoctorResponse(BaseModel):
     status: str
 
 
+class StoredAutoSimStartRequest(BaseModel):
+    """
+    Kick off an auto-sim batch using stored parquet clinical cases and transcripts.
+    """
+
+    num_cases: int = 100
+    api_key: str | None = None
+
+
+class StoredAutoSimStartResponse(BaseModel):
+    job_id: str
+    total_cases: int
+
+
+class StoredAutoSimProgressResponse(BaseModel):
+    status: str
+    completed: int
+    total: int
+    percent: int
+    message: Optional[str] = None
+
+
 # --- In-memory session store (for now) ----------------------------------------
 
 
 _SESSIONS: Dict[str, SimulatedPatientAgent] = {}
 _JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def prepare_cases_from_payload(
+    cases_payload: List[Dict[str, Any]],
+    fallback_blp: BehavioralLinguisticProfile,
+    fallback_profile: PatientProfile,
+) -> List[DoctorTrainingCase]:
+    """
+    Build DoctorTrainingCase objects from a payload list.
+    Falls back to the provided BLP/patient profile when items are partial.
+    """
+    cases: List[DoctorTrainingCase] = []
+    for idx, case in enumerate(cases_payload):
+        if not isinstance(case, dict):
+            continue
+        blp = case.get("blp") or fallback_blp
+        patient_profile = case.get("patient_profile") or fallback_profile
+        case_id = str(
+            case.get("case_id")
+            or getattr(patient_profile, "id", None)
+            or f"case_{idx}"
+        )
+        cases.append(
+            DoctorTrainingCase(
+                case_id=case_id,
+                patient_profile=patient_profile,
+                blp=blp,
+            )
+        )
+    return cases
+
+
+def _load_transcripts_from_disk(limit: Optional[int] = None) -> List[str]:
+    """
+    Read transcript text files from data/transcripts in sorted order.
+    Empty files are skipped.
+    """
+    transcripts_dir = Path("data/transcripts")
+    texts: List[str] = []
+    for path in sorted(transcripts_dir.glob("*.txt")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if not text.strip():
+            continue
+        texts.append(text)
+        if limit is not None and len(texts) >= limit:
+            break
+    return texts
+
+
+def _format_case_text(case_row: Dict[str, Any]) -> str:
+    """
+    Compose a raw case text blob from the structured parquet fields.
+    """
+    parts: List[str] = []
+    age = case_row.get("age")
+    if age is not None and not (isinstance(age, float) and pd.isna(age)):
+        try:
+            age_int = int(age)
+            parts.append(f"Age: {age_int}")
+        except Exception:
+            parts.append(f"Age: {age}")
+    gender = case_row.get("gender") or case_row.get("gender_identity")
+    if gender and not (isinstance(gender, float) and pd.isna(gender)):
+        parts.append(f"Gender: {gender}")
+    abstract = case_row.get("abstract")
+    if isinstance(abstract, str) and abstract.strip():
+        parts.append(f"Abstract: {abstract.strip()}")
+    case_text = case_row.get("case_text") or case_row.get("case") or ""
+    if isinstance(case_text, str) and case_text.strip():
+        parts.append(case_text.strip())
+    return "\n".join(parts).strip()
 
 
 # --- Endpoints ----------------------------------------------------------------
@@ -381,6 +479,137 @@ def simulate_doctor_session(payload: DoctorSessionRequest) -> DoctorSessionRespo
         
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Doctor simulation failed: {e}")
+
+
+def _run_stored_auto_sim_job(job_id: str, num_cases: int, api_key: Optional[str]) -> None:
+    """
+    Background worker: load stored cases/transcripts, run auto-sim, and log traces.
+    """
+    job = _JOBS.get(job_id)
+    if job is None:
+        return
+    try:
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
+            os.environ["GEMINI_API_KEY"] = api_key
+            os.environ["GOOGLE_API_KEY"] = api_key
+
+        transcripts = _load_transcripts_from_disk()
+        if not transcripts:
+            raise RuntimeError("No transcripts found in data/transcripts")
+
+        cases_df = pd.read_parquet("data/clinical_cases/cases.parquet")
+        if cases_df is None or cases_df.empty:
+            raise RuntimeError("No clinical cases available in cases.parquet")
+
+        total = min(max(1, num_cases), len(cases_df))
+        job["progress"] = {"completed": 0, "total": total, "percent": 0, "errors": 0}
+        job["status"] = "running"
+
+        anonymizer = TranscriptAnonymizer()
+        blp_extractor = BLPExtractor()
+        profile_builder = PatientProfileBuilder()
+        controller = SimulationController()
+        doc_agent = SimulatedDoctorAgent()
+        judge = DoctorCritiqueAgent(model=doc_agent.model)
+
+        selected_cases = cases_df.head(total)
+        for idx, (_, row) in enumerate(selected_cases.iterrows()):
+            case_dict = row.to_dict()
+            transcript_text = transcripts[idx % len(transcripts)]
+            try:
+                raw_case_text = _format_case_text(case_dict)
+                if not raw_case_text:
+                    raise ValueError("Case text is empty")
+
+                blp = blp_extractor.extract(anonymizer.anonymize(transcript_text))
+                patient_profile = profile_builder.build_from_case(raw_case_text)
+                case_id = str(
+                    case_dict.get("case_id")
+                    or case_dict.get("article_id")
+                    or patient_profile.id
+                    or f"case_{idx}"
+                )
+                patient_profile.id = case_id
+
+                pat_agent = SimulatedPatientAgent(
+                    blp=blp,
+                    patient_profile=patient_profile,
+                )
+                trace = controller.run_simulation(
+                    doctor_agent=doc_agent,
+                    patient_agent=pat_agent,
+                    case_id=case_id,
+                    ground_truth_diagnosis=patient_profile.primary_diagnoses,
+                    max_turns=10,
+                )
+                critique = judge.critique(trace, patient_profile)
+                log_trace_for_grpo(trace, critique, doc_agent.system_prompt)
+            except Exception as inner_exc:
+                progress = job.get("progress", {})
+                progress["errors"] = progress.get("errors", 0) + 1
+                progress["message"] = str(inner_exc)
+                job["progress"] = progress
+            finally:
+                progress = job.get("progress", {})
+                progress["completed"] = progress.get("completed", 0) + 1
+                total_cases = max(1, int(progress.get("total", total)))
+                try:
+                    percent = int(min(100, (progress["completed"] / total_cases) * 100))
+                except Exception:
+                    percent = 0
+                progress["percent"] = percent
+                job["progress"] = progress
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)
+        return
+
+    job["status"] = "complete"
+
+
+@app.post("/api/simulate/doctor-session/stored", response_model=StoredAutoSimStartResponse)
+def simulate_doctor_session_from_storage(payload: StoredAutoSimStartRequest) -> StoredAutoSimStartResponse:
+    """
+    Kick off a 100-case (default) auto-sim batch using stored parquet cases + transcripts.
+    """
+    total_cases = max(1, payload.num_cases)
+    job_id = str(uuid4())
+    _JOBS[job_id] = {
+        "status": "queued",
+        "progress": {"completed": 0, "total": total_cases, "percent": 0, "errors": 0},
+    }
+
+    threading.Thread(
+        target=_run_stored_auto_sim_job,
+        args=(job_id, total_cases, payload.api_key),
+        daemon=True,
+    ).start()
+    return StoredAutoSimStartResponse(job_id=job_id, total_cases=total_cases)
+
+
+@app.get("/api/simulate/doctor-session/stored/{job_id}", response_model=StoredAutoSimProgressResponse)
+def get_stored_auto_sim_progress(job_id: str) -> StoredAutoSimProgressResponse:
+    """
+    Poll progress for the stored auto-sim job.
+    """
+    job = _JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    prog = job.get("progress", {}) or {}
+    total = int(prog.get("total") or 0)
+    completed = int(prog.get("completed") or 0)
+    percent = int(
+        prog.get("percent")
+        or (int((completed / total) * 100) if total else 0)
+    )
+    return StoredAutoSimProgressResponse(
+        status=str(job.get("status", "unknown")),
+        completed=completed,
+        total=total,
+        percent=percent,
+        message=job.get("error") or prog.get("message"),
+    )
 
 
 @app.post("/api/train/doctor", response_model=TrainDoctorResponse)

@@ -86,6 +86,11 @@ const App: React.FC = () => {
   const [doctorCritique, setDoctorCritique] = useState<DoctorCritiqueResult | null>(null);
   const [busyTraining, setBusyTraining] = useState(false);
   const [trainingJobId, setTrainingJobId] = useState<string | null>(null);
+  const [busyStoredAutoSim, setBusyStoredAutoSim] = useState(false);
+  const [storedAutoSimJobId, setStoredAutoSimJobId] = useState<string | null>(null);
+  const [storedAutoSimStatus, setStoredAutoSimStatus] = useState<string | null>(null);
+  const [storedAutoSimProgress, setStoredAutoSimProgress] = useState<number>(0);
+  const [storedAutoSimTimer, setStoredAutoSimTimer] = useState<number | null>(null);
 
   const [optimizeJobId, setOptimizeJobId] = useState<string | null>(null);
   const [optimizePercent, setOptimizePercent] = useState<number>(0);
@@ -446,6 +451,14 @@ const App: React.FC = () => {
     }
   }, [conversation, doctorTrace]);
 
+  useEffect(() => {
+    return () => {
+      if (storedAutoSimTimer !== null) {
+        window.clearInterval(storedAutoSimTimer);
+      }
+    };
+  }, [storedAutoSimTimer]);
+
   const handleResetChat = async () => {
     if (conversation.length > 0) {
       const ok = window.confirm(
@@ -566,6 +579,85 @@ const App: React.FC = () => {
         setError(e instanceof Error ? e.message : "Simulation failed");
     } finally {
         setBusyDoctorSim(false);
+    }
+  };
+
+  const handleRunStoredAutoSim = async () => {
+    // Kick off a 100-case auto-sim batch using stored parquet cases + transcripts.
+    if (storedAutoSimTimer !== null) {
+      window.clearInterval(storedAutoSimTimer);
+      setStoredAutoSimTimer(null);
+    }
+    setBusyStoredAutoSim(true);
+    setStoredAutoSimStatus("queued");
+    setStoredAutoSimProgress(0);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/simulate/doctor-session/stored`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          num_cases: 100,
+          api_key: apiKey || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Stored auto-sim error (${res.status}): ${text}`);
+      }
+      const data: { job_id: string; total_cases: number } = await res.json();
+      setStoredAutoSimJobId(data.job_id);
+      setStoredAutoSimStatus("running");
+
+      const pollId = window.setInterval(async () => {
+        try {
+          const pRes = await fetch(
+            `${API_BASE}/api/simulate/doctor-session/stored/${encodeURIComponent(
+              data.job_id,
+            )}`,
+          );
+          if (!pRes.ok) {
+            if (pRes.status === 404) {
+              window.clearInterval(pollId);
+              setStoredAutoSimTimer(null);
+              setStoredAutoSimStatus("error");
+              setBusyStoredAutoSim(false);
+            }
+            return;
+          }
+          const pData: {
+            status: string;
+            completed: number;
+            total: number;
+            percent: number;
+            message?: string | null;
+          } = await pRes.json();
+          setStoredAutoSimStatus(pData.status);
+          setStoredAutoSimProgress(pData.percent ?? 0);
+          if (pData.status === "complete") {
+            window.clearInterval(pollId);
+            setStoredAutoSimTimer(null);
+            setBusyStoredAutoSim(false);
+          }
+          if (pData.status === "error") {
+            window.clearInterval(pollId);
+            setStoredAutoSimTimer(null);
+            setBusyStoredAutoSim(false);
+            if (pData.message) {
+              setError(pData.message);
+            }
+          }
+        } catch {
+          // ignore transient errors
+        }
+      }, 1000);
+      setStoredAutoSimTimer(pollId);
+    } catch (e) {
+      setBusyStoredAutoSim(false);
+      setStoredAutoSimStatus("error");
+      setError(
+        e instanceof Error ? e.message : "Failed to launch stored auto-sim batch.",
+      );
     }
   };
 
@@ -1021,7 +1113,29 @@ const App: React.FC = () => {
                       >
                           {busyDoctorSim ? "Running Simulation..." : "Run Auto-Sim"}
                       </button>
+                      <button
+                          className="secondary-button"
+                          onClick={handleRunStoredAutoSim}
+                          disabled={busyStoredAutoSim}
+                          style={{ minWidth: 200 }}
+                      >
+                          {busyStoredAutoSim ? "Running 100 stored cases..." : "Auto sim with stored data"}
+                      </button>
                   </div>
+
+                  {storedAutoSimStatus && (
+                      <div style={{ marginTop: 8, width: "100%" }}>
+                          <div className="progress">
+                              <div
+                                  className="progress-bar"
+                                  style={{ width: `${storedAutoSimProgress}%` }}
+                              />
+                          </div>
+                          <div className="progress-label">
+                              Stored auto-sim: {storedAutoSimStatus} - {storedAutoSimProgress}%
+                          </div>
+                      </div>
+                  )}
 
                   <div className="conversation-body" style={{ minHeight: 180 }}>
                       { !doctorTrace ? (
