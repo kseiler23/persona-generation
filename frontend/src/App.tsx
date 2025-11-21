@@ -209,6 +209,7 @@ const App: React.FC = () => {
         use_merge: gepaUseMerge,
         track_stats: gepaTrackStats,
         model: gepaModel,
+        api_key: apiKey || undefined,
       };
       const res = await fetch(`${API_BASE}/api/optimize/blp-prompt/start`, {
         method: "POST",
@@ -512,6 +513,7 @@ const App: React.FC = () => {
         })),
         model: critiqueModel,
         max_tokens: critiqueMaxTokens,
+        api_key: apiKey || undefined,
       };
 
       const res = await fetch(`${API_BASE}/api/critique`, {

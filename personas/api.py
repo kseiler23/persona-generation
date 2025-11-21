@@ -129,6 +129,7 @@ class CritiqueRequest(BaseModel):
     conversation: List[ConversationTurn]
     model: str | None = None
     max_tokens: int | None = None
+    api_key: str | None = None
 
 
 class CritiqueResponse(BaseModel):
@@ -355,7 +356,12 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
     if not payload.conversation:
         raise HTTPException(status_code=400, detail="Conversation is empty.")
 
-    
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
+        litellm.api_key = payload.api_key
+
     agent = PersonaCritiqueAgent(
         blp=payload.blp,
         patient_profile=payload.patient_profile,
@@ -559,6 +565,7 @@ class OptimizeBLPRequest(BaseModel):
     use_merge: bool | None = None
     track_stats: bool | None = None
     model: str | None = None
+    api_key: str | None = None
 
 
 class OptimizeBLPResponse(BaseModel):
@@ -636,8 +643,12 @@ def optimize_blp_prompt_endpoint(payload: OptimizeBLPRequest) -> OptimizeBLPResp
         track_stats=True if payload.track_stats is None else payload.track_stats,
     )
 
+    if payload.api_key:
+        os.environ["OPENAI_API_KEY"] = payload.api_key
+        os.environ["GEMINI_API_KEY"] = payload.api_key
+        os.environ["GOOGLE_API_KEY"] = payload.api_key
+
     # Run optimization (persona-only aggregation by default)
-    
     default_opt_model = get_value("gepa", "optimization_model", "gemini/gemini-3-pro-preview")
     model_for_opt = payload.model or default_opt_model
     # Preconfigure DSPy in this thread; ignore if already configured elsewhere
