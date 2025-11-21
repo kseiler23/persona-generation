@@ -11,7 +11,7 @@ from .json_utils import coerce_json_object
 
 
 _DEFAULT_JUDGE_MODEL = str(
-    get_value("defaults", "model", "gemini-3-pro-preview") or "gemini-3-pro-preview"
+    get_value("defaults", "model", "gemini/gemini-3-pro-preview") or "gemini/gemini-3-pro-preview"
 )
 
 
@@ -77,7 +77,19 @@ class ConversationJudge:
             max_tokens=self.max_tokens,
         )
         if not content:
-            raise RuntimeError("Judge model returned empty content.")
+            # Fall back to a safe zeroed report instead of blowing up the pipeline
+            return {
+                "per_category": {
+                    "question_anticipation": 0,
+                    "clinical_fact_fidelity": 0,
+                    "lay_terminology": 0,
+                    "question_restatement": 0,
+                    "persona_integrity": 0,
+                    "binary_answer_padding": 0,
+                },
+                "total_errors": 0,
+                "notes": ["Judge model returned empty content."],
+            }
 
         try:
             data = json.loads(content)

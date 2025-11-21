@@ -101,7 +101,7 @@ class PersonaCritiqueAgent:
     patient_profile: PatientProfile
     raw_transcript: str
     raw_case: str
-    model: str = get_model_for_agent("critique", "gemini-3-pro-preview")
+    model: str = get_model_for_agent("critique", "gemini/gemini-3-pro-preview")
     max_tokens: int = get_max_tokens_for_agent("critique", 2048)
 
     def critique(self, conversation: List[ConversationTurn]) -> CritiqueResult:
@@ -160,5 +160,4 @@ class PersonaCritiqueAgent:
         except Exception:
             data = coerce_json_object(content)
         return CritiqueResult.model_validate(data)
-
 

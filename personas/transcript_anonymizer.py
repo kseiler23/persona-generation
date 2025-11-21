@@ -33,7 +33,7 @@ class TranscriptAnonymizer:
     Raw interview transcript → anonymized transcript that is safe to feed into the BLP extractor.
     """
 
-    model: str = get_model_for_agent("anonymizer", "gemini-3-pro-preview")
+    model: str = get_model_for_agent("anonymizer", "gemini/gemini-3-pro-preview")
 
     def anonymize(self, transcript: str) -> str:
         """
@@ -51,4 +51,3 @@ class TranscriptAnonymizer:
             ],
         )
         return content
-

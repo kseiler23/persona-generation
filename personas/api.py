@@ -370,7 +370,7 @@ def optimize_blp_prompt_endpoint(payload: OptimizeBLPRequest) -> OptimizeBLPResp
 
     # Run optimization (persona-only aggregation by default)
     
-    default_opt_model = get_value("gepa", "optimization_model", "gemini-3-pro-preview")
+    default_opt_model = get_value("gepa", "optimization_model", "gemini/gemini-3-pro-preview")
     model_for_opt = payload.model or default_opt_model
     # Preconfigure DSPy in this thread; ignore if already configured elsewhere
     try:
@@ -464,7 +464,7 @@ def optimize_blp_prompt_start(payload: OptimizeBLPRequest) -> OptimizeStartRespo
     def _run():
         try:
             _JOBS[job_id]["status"] = "running"
-            default_opt_model = get_value("gepa", "optimization_model", "gemini-3-pro-preview")
+            default_opt_model = get_value("gepa", "optimization_model", "gemini/gemini-3-pro-preview")
             model_for_opt = payload.model or default_opt_model
             def _should_cancel() -> bool:
                 job = _JOBS.get(job_id)

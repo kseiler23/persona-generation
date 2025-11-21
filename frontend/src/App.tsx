@@ -73,14 +73,14 @@ const App: React.FC = () => {
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   // Frontend-adjustable models and token budgets
-  const [blpModel, setBlpModel] = useState("gemini-3-pro-preview");
+  const [blpModel, setBlpModel] = useState("gemini/gemini-3-pro-preview");
   const [blpMaxTokens, setBlpMaxTokens] = useState<number>(2048);
-  const [patientModel, setPatientModel] = useState("gemini-3-pro-preview");
+  const [patientModel, setPatientModel] = useState("gemini/gemini-3-pro-preview");
   const [patientMaxTokens, setPatientMaxTokens] = useState<number>(1024);
-  const [critiqueModel, setCritiqueModel] = useState("gemini-3-pro-preview");
+  const [critiqueModel, setCritiqueModel] = useState("gemini/gemini-3-pro-preview");
   const [critiqueMaxTokens, setCritiqueMaxTokens] = useState<number>(2048);
   // GEPA knobs
-  const [gepaModel, setGepaModel] = useState("gemini-3-pro-preview");
+  const [gepaModel, setGepaModel] = useState("gemini/gemini-3-pro-preview");
   const [gepaReflectionMinibatchSize, setGepaReflectionMinibatchSize] = useState<number>(1);
   const [gepaCandidateSelection, setGepaCandidateSelection] = useState("pareto");
   const [gepaMaxMetricCalls, setGepaMaxMetricCalls] = useState<number>(5);

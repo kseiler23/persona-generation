@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 
 import pytest
 
@@ -14,10 +15,16 @@ from personas.models import ConversationTurn
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "patient_case.json"
 _HAS_KEY = bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+try:
+    socket.gethostbyname("generativelanguage.googleapis.com")
+    _HAS_NETWORK = True
+except Exception:
+    _HAS_NETWORK = False
 
 
 @pytest.mark.skipif(
-    not _HAS_KEY, reason="Requires LLM API key (OPENAI_API_KEY or GEMINI_API_KEY)"
+    not _HAS_KEY or not _HAS_NETWORK,
+    reason="Requires LLM API key (OPENAI_API_KEY or GEMINI_API_KEY) and network access",
 )
 def test_pipeline_end_to_end_smoke() -> None:
     fixture = json.loads(FIXTURE_PATH.read_text())
