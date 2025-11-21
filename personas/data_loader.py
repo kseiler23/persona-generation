@@ -13,6 +13,7 @@ def load_training_cases(
     blp_dir: str = "data/preprocessed/blps",
     profile_dir: str = "data/preprocessed/profiles",
     case_persona_mapping: Optional[str] = None,
+    only_suitable_profiles: bool = False,
     verbose: bool = False
 ) -> List[DoctorTrainingCase]:
     """
@@ -28,6 +29,7 @@ def load_training_cases(
         profile_dir: Directory containing preprocessed profile JSON files
         case_persona_mapping: Optional path to JSON file mapping case IDs to BLP files
                              (for when you have more profiles than BLPs)
+        only_suitable_profiles: If True, only include profiles where conversation_suitability.is_suitable is True
         verbose: If True, print debug messages
 
     Returns:
@@ -65,6 +67,13 @@ def load_training_cases(
         print(f"[DEBUG] Found {len(blp_files)} BLP files")
         print(f"[DEBUG] Found {len(profile_files)} profile files")
 
+    def _is_profile_suitable(profile_data: dict) -> bool:
+        if not only_suitable_profiles:
+            return True
+        return bool(
+            profile_data.get("conversation_suitability", {}).get("is_suitable") is True
+        )
+
     # Load case-persona mapping if provided
     mapping = None
     if case_persona_mapping:
@@ -94,6 +103,11 @@ def load_training_cases(
             # Load profile
             with open(profile_file, "r", encoding="utf-8") as f:
                 profile_data = json.load(f)
+
+            if not _is_profile_suitable(profile_data):
+                if verbose:
+                    print(f"[DEBUG] Skipping {profile_name} (not marked suitable)")
+                continue
             patient_profile = PatientProfile.model_validate(profile_data)
 
             # Use filename as the key for mapping lookup (more reliable than profile ID)
@@ -162,6 +176,10 @@ def load_training_cases(
             # Load profile
             with open(profile_file, "r", encoding="utf-8") as f:
                 profile_data = json.load(f)
+            if not _is_profile_suitable(profile_data):
+                if verbose:
+                    print(f"[DEBUG] Skipping {name} (not marked suitable)")
+                continue
             patient_profile = PatientProfile.model_validate(profile_data)
 
             # Get case_id from profile or use filename
