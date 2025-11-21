@@ -5,10 +5,13 @@ from uuid import uuid4
 import io
 from contextlib import redirect_stdout, redirect_stderr
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import threading
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from .blp_extractor import BLPExtractor
 from .critique_agent import PersonaCritiqueAgent
@@ -19,9 +22,14 @@ from .models import (
     ConversationTurn,
     CritiqueResult,
     PatientProfile,
+    SimulationTrace,
+    DoctorCritiqueResult,
 )
 from .patient_profile_builder import PatientProfileBuilder
 from .simulated_patient_agent import SimulatedPatientAgent
+from .simulated_doctor import SimulatedDoctorAgent
+from .simulation_controller import SimulationController
+from .doctor_critique import DoctorCritiqueAgent
 from .transcript_anonymizer import TranscriptAnonymizer
 from .blp_prompt_optimization import (
     BLPLearningExample,
@@ -30,6 +38,7 @@ from .blp_prompt_optimization import (
     configure_dspy,
 )
 from .config import get_value
+from .train_doctor import DoctorTrainingCase, run_training_rollouts
 
 
 app = FastAPI(
@@ -42,10 +51,7 @@ app = FastAPI(
 )
 
 # Allow browser clients (e.g., Vite dev server) to call this API.
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -122,6 +128,46 @@ class CritiqueRequest(BaseModel):
 
 class CritiqueResponse(BaseModel):
     critique: CritiqueResult
+
+
+class DoctorSessionRequest(BaseModel):
+    """
+    Request to run an automated Doctor vs Patient session.
+    """
+    blp: BehavioralLinguisticProfile
+    patient_profile: PatientProfile
+    doctor_model: str | None = None
+    patient_model: str | None = None
+    max_turns: int = 10
+
+
+class DoctorSessionResponse(BaseModel):
+    trace: SimulationTrace
+    critique: DoctorCritiqueResult
+
+
+class TrainDoctorRequest(BaseModel):
+    """
+    Request to run a batch of simulations to generate training traces.
+    """
+    cases: List[Dict[str, Any]] # List of objects with {raw_case, raw_transcript} or pre-built profiles
+    # For simplicity, we'll accept pre-built profiles + blps in a simplified format or just assume 1 case for now
+    # To keep payload small, let's accept just one case for the "run" button in UI for now, 
+    # or a list of structured objects.
+    
+    # Let's reuse the single case structure for the "Training" tab UI 
+    # which is often "Optimize this current case".
+    blp: BehavioralLinguisticProfile
+    patient_profile: PatientProfile
+    case_id: str = "manual_case"
+    
+    iterations: int = 1
+    model: str | None = None
+
+
+class TrainDoctorResponse(BaseModel):
+    job_id: str
+    status: str
 
 
 # --- In-memory session store (for now) ----------------------------------------
@@ -270,6 +316,86 @@ def critique_simulation(payload: CritiqueRequest) -> CritiqueResponse:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Critique generation failed: {e}")
     return CritiqueResponse(critique=critique)
+
+
+@app.post("/api/simulate/doctor-session", response_model=DoctorSessionResponse)
+def simulate_doctor_session(payload: DoctorSessionRequest) -> DoctorSessionResponse:
+    """
+    Run a fully automated session between the Simulated Doctor and Simulated Patient.
+    Returns the simulation trace and the Doctor's critique score.
+    """
+    try:
+        # 1. Init Agents
+        doc_agent = SimulatedDoctorAgent(
+            model=payload.doctor_model or SimulatedDoctorAgent.model
+        )
+        pat_agent = SimulatedPatientAgent(
+            blp=payload.blp,
+            patient_profile=payload.patient_profile,
+            model=payload.patient_model or SimulatedPatientAgent.model
+        )
+        
+        # 2. Run Controller
+        controller = SimulationController()
+        trace = controller.run_simulation(
+            doctor_agent=doc_agent,
+            patient_agent=pat_agent,
+            case_id=payload.patient_profile.id,
+            ground_truth_diagnosis=payload.patient_profile.primary_diagnoses,
+            max_turns=payload.max_turns
+        )
+        
+        # 3. Run Judge
+        judge = DoctorCritiqueAgent(
+            model=payload.doctor_model or "gemini/gemini-3-pro-preview" 
+        )
+        critique = judge.critique(trace, payload.patient_profile)
+        
+        return DoctorSessionResponse(trace=trace, critique=critique)
+        
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Doctor simulation failed: {e}")
+
+
+@app.post("/api/train/doctor", response_model=TrainDoctorResponse)
+def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTasks) -> TrainDoctorResponse:
+    """
+    Start a background job to run simulations (rollouts) and log traces for training.
+    """
+    job_id = str(uuid4())
+    
+    # Store job status
+    _JOBS[job_id] = {
+        "status": "running",
+        "progress": {"percent": 0, "rollouts": 0, "total": payload.iterations},
+        "result": None
+    }
+    
+    def _run_task():
+        try:
+            case = DoctorTrainingCase(
+                case_id=payload.case_id,
+                patient_profile=payload.patient_profile,
+                blp=payload.blp
+            )
+            
+            # Run rollouts
+            run_training_rollouts(
+                cases=[case],
+                model_name=payload.model or "gemini/gemini-3-pro-preview",
+                num_rollouts=payload.iterations
+            )
+            
+            _JOBS[job_id]["status"] = "complete"
+            _JOBS[job_id]["progress"]["percent"] = 100
+            
+        except Exception as e:
+            _JOBS[job_id]["status"] = "error"
+            _JOBS[job_id]["error"] = str(e)
+
+    background_tasks.add_task(_run_task)
+    
+    return TrainDoctorResponse(job_id=job_id, status="started")
 
 
 # --- GEPA optimization endpoint ------------------------------------------------

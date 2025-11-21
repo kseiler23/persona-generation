@@ -1,0 +1,14 @@
+diff --git a/node_modules/vite/package.json b/node_modules/vite/package.json
+index 8d8f7a6..f5a2275 100644
+--- a/node_modules/vite/package.json
++++ b/node_modules/vite/package.json
+@@ -18,6 +18,7 @@
+   "exports": {
+     ".": "./dist/node/index.js",
+     "./client": {
+       "types": "./client.d.ts"
+     },
++    "./runtime": "./dist/node/runtime.js",
+     "./module-runner": "./dist/node/module-runner.js",
+     "./dist/client/*": "./dist/client/*",
+     "./types/*": {

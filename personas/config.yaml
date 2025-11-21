@@ -17,9 +17,17 @@ agents:
     model: gemini/gemini-3-pro-preview
     max_tokens: 10000
 
+  simulated_doctor:
+    model: gemini/gemini-3-pro-preview
+    max_tokens: 512
+
   critique:
     model: gemini/gemini-3-pro-preview
     max_tokens: 10000
+
+  doctor_critique:
+    model: gemini/gemini-3-pro-preview
+    max_tokens: 2048
 
 gepa:
   optimization_model: gemini/gemini-3-pro-preview

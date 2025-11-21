@@ -237,4 +237,26 @@ class CritiqueResult(BaseModel):
     )
 
 
+class SimulationTrace(BaseModel):
+    """
+    Full record of an automated Doctor-Patient simulation session.
+    This trace format is designed to be used for future GRPO training.
+    """
+    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    case_id: str
+    transcript: List[ConversationTurn]
+    doctor_diagnosis: str
+    ground_truth_diagnosis: List[str]
+    turns_count: int
 
+
+class DoctorCritiqueResult(BaseModel):
+    """
+    Reward signal for the Simulated Doctor Agent.
+    Includes both scalar scores and detailed feedback.
+    """
+    overall_score: float = Field(..., ge=0.0, le=1.0, description="Aggregate reward score [0,1]")
+    diagnostic_accuracy: float = Field(..., ge=0.0, le=1.0, description="1.0 if diagnosis matches ground truth, else 0.0 (or partial)")
+    process_score: float = Field(..., ge=0.0, le=1.0, description="Evaluation of questioning efficiency and manner")
+    critique_text: str = Field(..., description="Reasoning for the score")
+    successful_diagnosis: bool = Field(..., description="Whether the primary diagnosis was correctly identified")
