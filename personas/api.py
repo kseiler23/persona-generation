@@ -470,9 +470,10 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
 
             # Load cases from data files or payload
             if payload.use_data_files:
+                # Updated to match new signature from guillaume branch (no on-the-fly extraction)
                 cases = load_training_cases(
                     num_cases=payload.num_cases,
-                    model=model_name
+                    verbose=True
                 )
             else:
                 cases = prepare_cases_from_payload(payload.cases or [], payload.blp, payload.patient_profile)
@@ -564,7 +565,7 @@ def train_doctor_from_data(payload: TrainFromDataRequest, background_tasks: Back
             try:
                 cases = load_training_cases(
                     num_cases=payload.num_cases,
-                    model=model_name
+                    verbose=True
                 )
             except Exception as e:
                  _JOBS[job_id]["status"] = "error"
