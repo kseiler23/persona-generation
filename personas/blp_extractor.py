@@ -38,7 +38,6 @@ Output:
   risk_markers, language_signatures, evidence_quotes.
 """,
 )
- 
 
 
 @dataclass
@@ -59,8 +58,6 @@ class BLPExtractor:
 
         if not anonymized_transcript.strip():
             raise ValueError("Transcript is empty; cannot extract BLP.")
-
-        
 
         content = chat_completion(
             model=self.model,
@@ -86,7 +83,42 @@ class BLPExtractor:
         except Exception:
             # Be robust to minor format issues by coercing to a JSON object.
             data = coerce_json_object(content)
-        
+
+        # --- Fix for "Russian Doll" JSON (nested in summary or response) ---
+        if isinstance(data, dict) and len(data) < 3:
+            # Check if 'summary' or 'response' holds the real JSON as a string
+            nested_key = None
+            if "summary" in data and isinstance(data["summary"], str) and "{" in data["summary"]:
+                nested_key = "summary"
+            elif "response" in data and isinstance(data["response"], str) and "{" in data["response"]:
+                nested_key = "response"
+            
+            if nested_key:
+                try:
+                    nested_json = data[nested_key]
+                    # Find the first { and last } to isolate JSON
+                    start = nested_json.find("{")
+                    end = nested_json.rfind("}")
+                    if start != -1 and end != -1:
+                        nested_content = nested_json[start : end + 1]
+                        try:
+                            inner_data = json.loads(nested_content)
+                        except Exception:
+                            inner_data = coerce_json_object(nested_content)
+                        
+                        # If successful, merge it into data (overwriting the malformed field)
+                        if isinstance(inner_data, dict) and len(inner_data) > 1:
+                            data.update(inner_data)
+                            # If it was 'response', remove it. If 'summary', we overwritten it or need to check.
+                            # Actually, if inner_data has 'summary', it overwrote the string summary.
+                            # If inner_data doesn't have 'summary', we might want to keep the original string as summary?
+                            # But usually the string IS the JSON, so it's not a valid summary text.
+                            # Ideally we prefer the inner 'summary' if present.
+                            if nested_key == "response":
+                                data.pop("response", None)
+                except Exception:
+                    pass # Fallback to original data
+        # -------------------------------------------------------------------
 
         # Normalize required string fields even if model emits dicts/objects.
         string_fields: List[str] = [
