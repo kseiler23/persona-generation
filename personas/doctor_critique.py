@@ -68,7 +68,11 @@ class DoctorCritiqueAgent:
             data = json.loads(content)
         except Exception:
             data = coerce_json_object(content)
-            
+
+        # Post-process: Handle critique_text as list (LLM sometimes returns array)
+        if "critique_text" in data and isinstance(data["critique_text"], list):
+            data["critique_text"] = "\n".join(data["critique_text"])
+
         # Validate and return
         return DoctorCritiqueResult.model_validate(data)
 

@@ -3,123 +3,206 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Optional
-import pandas as pd
 
-from .blp_extractor import BLPExtractor
-from .patient_profile_builder import PatientProfileBuilder
 from .train_doctor import DoctorTrainingCase
 from .models import BehavioralLinguisticProfile, PatientProfile
 
 
 def load_training_cases(
     num_cases: int = 10,
-    cases_file: str = "data/clinical_cases/cases.parquet",
-    transcripts_dir: str = "data/transcripts",
-    model: str = "gemini/gemini-3-pro-preview",
-    use_preprocessed: bool = True,
-    blp_dir: Optional[str] = "data/preprocessed/blps",
-    profile_dir: Optional[str] = "data/preprocessed/profiles"
+    blp_dir: str = "data/preprocessed/blps",
+    profile_dir: str = "data/preprocessed/profiles",
+    case_persona_mapping: Optional[str] = None,
+    only_suitable_profiles: bool = False,
+    verbose: bool = False
 ) -> List[DoctorTrainingCase]:
     """
-    Load training cases from parquet file and transcripts directory.
+    Load training cases from preprocessed JSON files.
+
+    This function loads BLPs and clinical profiles that have been preprocessed
+    and saved as JSON files. It pairs them based on matching filenames or an
+    optional case-persona mapping file.
 
     Args:
         num_cases: Number of cases to load (default: 10)
-        cases_file: Path to parquet file with clinical cases
-        transcripts_dir: Path to directory with transcript files
-        model: Model to use for BLP extraction and patient profile building
-        use_preprocessed: If True, load from preprocessed JSON files (default: True)
         blp_dir: Directory containing preprocessed BLP JSON files
         profile_dir: Directory containing preprocessed profile JSON files
+        case_persona_mapping: Optional path to JSON file mapping case IDs to BLP files
+                             (for when you have more profiles than BLPs)
+        only_suitable_profiles: If True, only include profiles where conversation_suitability.is_suitable is True
+        verbose: If True, print debug messages
 
     Returns:
         List of DoctorTrainingCase objects
+
+    Examples:
+        # Load with matching filenames (01.json profile with 01.json BLP)
+        cases = load_training_cases(num_cases=10)
+
+        # Load with case-persona mapping (for round-robin or random matching)
+        cases = load_training_cases(
+            num_cases=100,
+            case_persona_mapping="data/preprocessed/case_persona_mapping.json"
+        )
     """
-    # Load clinical cases
-    print(f"[DEBUG] Reading from data files...")
-    df = pd.read_parquet(cases_file)
+    blp_path = Path(blp_dir)
+    profile_path = Path(profile_dir)
 
-    # Load transcripts
-    transcripts_path = Path(transcripts_dir)
-    transcript_files = sorted(transcripts_path.glob("*.txt"))
+    # Check if directories exist
+    if not blp_path.exists():
+        raise FileNotFoundError(f"BLP directory not found: {blp_dir}")
+    if not profile_path.exists():
+        raise FileNotFoundError(f"Profile directory not found: {profile_dir}")
 
-    # Initialize paths for preprocessed data
-    blp_path = Path(blp_dir) if blp_dir else None
-    profile_path = Path(profile_dir) if profile_dir else None
+    # Get all BLP and profile files
+    blp_files = {f.stem: f for f in sorted(blp_path.glob("*.json"))}
+    profile_files = {f.stem: f for f in sorted(profile_path.glob("*.json"))}
 
-    # Check if we can use preprocessed data
-    can_use_preprocessed = use_preprocessed and blp_path and profile_path
-    if can_use_preprocessed:
-        can_use_preprocessed = blp_path.exists() and profile_path.exists()
-        if not can_use_preprocessed:
-            print(f"[DEBUG] Preprocessed directories not found, will extract on-the-fly")
+    if not blp_files:
+        raise ValueError(f"No BLP files found in {blp_dir}")
+    if not profile_files:
+        raise ValueError(f"No profile files found in {profile_dir}")
 
-    # Initialize extractors only if needed
-    blp_extractor = None
-    profile_builder = None
-    if not can_use_preprocessed:
-        print(f"[DEBUG] Initializing extractors for on-the-fly processing...")
-        blp_extractor = BLPExtractor(model=model)
-        profile_builder = PatientProfileBuilder(model=model)
+    if verbose:
+        print(f"[DEBUG] Found {len(blp_files)} BLP files")
+        print(f"[DEBUG] Found {len(profile_files)} profile files")
+
+    def _is_profile_suitable(profile_data: dict) -> bool:
+        if not only_suitable_profiles:
+            return True
+        return bool(
+            profile_data.get("conversation_suitability", {}).get("is_suitable") is True
+        )
+
+    # Load case-persona mapping if provided
+    mapping = None
+    if case_persona_mapping:
+        mapping_path = Path(case_persona_mapping)
+        if mapping_path.exists():
+            with open(mapping_path, "r", encoding="utf-8") as f:
+                mapping_data = json.load(f)
+                mapping = mapping_data.get("mapping", {})
+            if verbose:
+                print(f"[DEBUG] Loaded case-persona mapping with {len(mapping)} entries")
+        else:
+            if verbose:
+                print(f"[DEBUG] Case-persona mapping file not found: {case_persona_mapping}")
 
     cases = []
+    processed = 0
 
-    for idx in range(min(num_cases, len(df), len(transcript_files))):
-        case_row = df.iloc[idx]
-        transcript_file = transcript_files[idx]
-        case_id = case_row["case_id"]
+    # Strategy 1: Use case-persona mapping if provided
+    if mapping:
+        if verbose:
+            print(f"[DEBUG] Using case-persona mapping strategy")
 
-        # Load or extract BLP
-        if can_use_preprocessed:
-            blp_file = blp_path / f"{transcript_file.stem}.json"
-            if blp_file.exists():
-                print(f"[DEBUG] Loading preprocessed BLP for {transcript_file.stem}...")
-                with open(blp_file, "r", encoding="utf-8") as f:
-                    blp_data = json.load(f)
-                blp = BehavioralLinguisticProfile.model_validate(blp_data)
-            else:
-                print(f"[DEBUG] Preprocessed BLP not found for {transcript_file.stem}, extracting...")
-                if blp_extractor is None:
-                    blp_extractor = BLPExtractor(model=model)
-                with open(transcript_file, "r", encoding="utf-8") as f:
-                    transcript = f.read()
-                blp = blp_extractor.extract(transcript)
-        else:
-            print(f"[DEBUG] Reading transcript and extracting BLP...")
-            with open(transcript_file, "r", encoding="utf-8") as f:
-                transcript = f.read()
-            blp = blp_extractor.extract(transcript)
+        for profile_name, profile_file in profile_files.items():
+            if processed >= num_cases:
+                break
 
-        # Load or build patient profile
-        if can_use_preprocessed:
-            profile_file = profile_path / f"{case_id}.json"
-            if profile_file.exists():
-                print(f"[DEBUG] Loading preprocessed profile for {case_id}...")
-                with open(profile_file, "r", encoding="utf-8") as f:
-                    profile_data = json.load(f)
-                patient_profile = PatientProfile.model_validate(profile_data)
-            else:
-                print(f"[DEBUG] Preprocessed profile not found for {case_id}, building...")
-                if profile_builder is None:
-                    profile_builder = PatientProfileBuilder(model=model)
-                case_text = case_row["case_text"]
-                if pd.isna(case_text) or not case_text.strip():
-                    case_text = case_row.get("abstract", "")
-                patient_profile = profile_builder.build_from_case(case_text)
-        else:
-            print(f"[DEBUG] Building patient profile from case...")
-            case_text = case_row["case_text"]
-            if pd.isna(case_text) or not case_text.strip():
-                case_text = case_row.get("abstract", "")
-            patient_profile = profile_builder.build_from_case(case_text)
+            # Load profile
+            with open(profile_file, "r", encoding="utf-8") as f:
+                profile_data = json.load(f)
 
-        # Create training case
-        case = DoctorTrainingCase(
-            case_id=case_id,
-            patient_profile=patient_profile,
-            blp=blp
+            if not _is_profile_suitable(profile_data):
+                if verbose:
+                    print(f"[DEBUG] Skipping {profile_name} (not marked suitable)")
+                continue
+            patient_profile = PatientProfile.model_validate(profile_data)
+
+            # Use filename as the key for mapping lookup (more reliable than profile ID)
+            # The mapping file uses case_ids from the original parquet, but we use filenames
+            case_id = profile_name  # Use filename (e.g., "07", "162") as identifier
+
+            # Find matching BLP using mapping (try both filename and profile ID)
+            blp_name = mapping.get(case_id) or mapping.get(patient_profile.id if patient_profile.id else "")
+            if not blp_name:
+                if verbose:
+                    print(f"[DEBUG] No BLP mapping found for {case_id}, skipping")
+                continue
+
+            blp_file = blp_files.get(blp_name)
+            if not blp_file:
+                if verbose:
+                    print(f"[DEBUG] BLP file {blp_name} not found, skipping")
+                continue
+
+            # Load BLP
+            with open(blp_file, "r", encoding="utf-8") as f:
+                blp_data = json.load(f)
+            blp = BehavioralLinguisticProfile.model_validate(blp_data)
+
+            # Create training case
+            case = DoctorTrainingCase(
+                case_id=case_id,
+                patient_profile=patient_profile,
+                blp=blp
+            )
+            cases.append(case)
+            processed += 1
+
+            if verbose:
+                print(f"[DEBUG] Loaded case {processed}/{num_cases}: {case_id} with BLP {blp_name}")
+
+    # Strategy 2: Match by filename (01.json profile with 01.json BLP)
+    else:
+        if verbose:
+            print(f"[DEBUG] Using filename matching strategy")
+
+        # Find matching pairs (profiles and BLPs with same filename)
+        matching_names = set(blp_files.keys()) & set(profile_files.keys())
+
+        if not matching_names:
+            raise ValueError(
+                f"No matching BLP/profile pairs found. "
+                f"Consider using case_persona_mapping parameter."
+            )
+
+        if verbose:
+            print(f"[DEBUG] Found {len(matching_names)} matching pairs")
+
+        for name in sorted(matching_names):
+            if processed >= num_cases:
+                break
+
+            blp_file = blp_files[name]
+            profile_file = profile_files[name]
+
+            # Load BLP
+            with open(blp_file, "r", encoding="utf-8") as f:
+                blp_data = json.load(f)
+            blp = BehavioralLinguisticProfile.model_validate(blp_data)
+
+            # Load profile
+            with open(profile_file, "r", encoding="utf-8") as f:
+                profile_data = json.load(f)
+            if not _is_profile_suitable(profile_data):
+                if verbose:
+                    print(f"[DEBUG] Skipping {name} (not marked suitable)")
+                continue
+            patient_profile = PatientProfile.model_validate(profile_data)
+
+            # Get case_id from profile or use filename
+            case_id = patient_profile.id or name
+
+            # Create training case
+            case = DoctorTrainingCase(
+                case_id=case_id,
+                patient_profile=patient_profile,
+                blp=blp
+            )
+            cases.append(case)
+            processed += 1
+
+            if verbose:
+                print(f"[DEBUG] Loaded case {processed}/{num_cases}: {name}")
+
+    if not cases:
+        raise ValueError(
+            f"No training cases could be loaded. Check that BLP and profile files exist."
         )
-        cases.append(case)
-        print(f"[DEBUG] Loaded case {idx + 1}/{num_cases}")
+
+    if verbose:
+        print(f"[DEBUG] Successfully loaded {len(cases)} training cases")
 
     return cases
