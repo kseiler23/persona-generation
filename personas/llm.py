@@ -21,6 +21,7 @@ def chat_completion(
     messages: List[Dict[str, str]],
     max_tokens: Optional[int] = None,
     response_format: Optional[Dict[str, Any]] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """
     Thin wrapper around LiteLLM's completion API.
@@ -43,9 +44,9 @@ def chat_completion(
         kwargs.setdefault("extra_body", {})
         kwargs["extra_body"]["response_format"] = response_format
 
-    # Allow explicit API key override for providers if env vars are set.
-    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
+    # Allow explicit API key override for providers if env vars are set or passed explicitly.
+    gemini_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    openai_key = api_key or os.environ.get("OPENAI_API_KEY")
 
     if gemini_key and model.startswith("gemini"):
         kwargs["api_key"] = gemini_key

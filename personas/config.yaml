@@ -1,35 +1,35 @@
 defaults:
-  model: gemini/gemini-3-pro-preview
+  model: openai/gpt-5.1-2025-11-13
 
 agents:
   anonymizer:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
 
   blp_extraction:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 10000
 
   patient_profile:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 10000
 
   simulated_patient:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 10000
 
   simulated_doctor:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 512
 
   critique:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 10000
 
   doctor_critique:
-    model: gemini/gemini-3-pro-preview
+    model: openai/gpt-5.1-2025-11-13
     max_tokens: 2048
 
 gepa:
-  optimization_model: gemini/gemini-3-pro-preview
-  reflection_model: gemini/gemini-3-pro-preview
+  optimization_model: openai/gpt-5.1-2025-11-13
+  reflection_model: openai/gpt-5.1-2025-11-13
   reflection_max_tokens: 32000

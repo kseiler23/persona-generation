@@ -103,6 +103,7 @@ class PersonaCritiqueAgent:
     raw_case: str
     model: str = get_model_for_agent("critique", "gemini/gemini-3-pro-preview")
     max_tokens: int = get_max_tokens_for_agent("critique", 2048)
+    api_key: str | None = None
 
     def critique(self, conversation: List[ConversationTurn]) -> CritiqueResult:
         """
@@ -150,6 +151,7 @@ class PersonaCritiqueAgent:
             ],
             response_format={"type": "json_object"},
             max_tokens=self.max_tokens,
+            api_key=self.api_key,
         )
 
         if not content:
