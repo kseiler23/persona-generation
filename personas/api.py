@@ -39,7 +39,7 @@ from .blp_prompt_optimization import (
     configure_dspy,
 )
 from .config import get_value
-from .train_doctor import DoctorTrainingCase, log_trace_for_grpo, run_training_rollouts
+from .train_doctor import DoctorTrainingCase, log_trace_for_grpo, run_training_rollouts, BatchProgress
 from .data_loader import load_training_cases
 
 
@@ -180,6 +180,16 @@ class TrainDoctorRequest(BaseModel):
 class TrainDoctorResponse(BaseModel):
     job_id: str
     status: str
+
+
+class TrainProgressResponse(BaseModel):
+    status: str
+    completed: int
+    total: int
+    successful: int
+    failed: int
+    avg_score: float
+    message: Optional[str] = None
 
 
 # --- In-memory session store (for now) ----------------------------------------
@@ -436,11 +446,17 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
     """
     job_id = str(uuid4())
 
-    # Store job status
+    # Store job status with detailed stats
     _JOBS[job_id] = {
         "status": "running",
-        "progress": {"percent": 0, "rollouts": 0, "total": payload.iterations},
-        "result": None
+        "progress": {
+            "completed": 0,
+            "total": 0, # Will be updated when we know how many cases
+            "successful": 0,
+            "failed": 0,
+            "avg_score": 0.0
+        },
+        "error": None
     }
 
     def _run_task():
@@ -468,17 +484,34 @@ def train_doctor_job(payload: TrainDoctorRequest, background_tasks: BackgroundTa
                             blp=payload.blp,
                         )
                     ]
+            
+            # Update total count
+            total_tasks = len(cases) * payload.iterations
+            _JOBS[job_id]["progress"]["total"] = total_tasks
+
+            def _progress_callback(stats: BatchProgress):
+                # Update shared state
+                _JOBS[job_id]["progress"].update({
+                    "completed": stats.completed,
+                    "total": stats.total,
+                    "successful": stats.successful,
+                    "failed": stats.failed,
+                    "avg_score": stats.avg_score,
+                })
+                if stats.last_error:
+                     _JOBS[job_id]["error"] = stats.last_error
 
             run_training_rollouts(
                 cases=cases,
                 model_name=model_name,
                 num_rollouts=payload.iterations,
+                progress_callback=_progress_callback
             )
 
             _JOBS[job_id]["status"] = "complete"
-            _JOBS[job_id]["progress"]["percent"] = 100
 
         except Exception as e:
+            traceback.print_exc()
             _JOBS[job_id]["status"] = "error"
             _JOBS[job_id]["error"] = str(e)
 
@@ -508,8 +541,14 @@ def train_doctor_from_data(payload: TrainFromDataRequest, background_tasks: Back
 
     _JOBS[job_id] = {
         "status": "running",
-        "progress": {"percent": 0, "rollouts": 0, "total": payload.iterations},
-        "result": None
+        "progress": {
+            "completed": 0,
+            "total": payload.num_cases * payload.iterations, 
+            "successful": 0,
+            "failed": 0,
+            "avg_score": 0.0
+        },
+        "error": None
     }
 
     def _run_task():
@@ -522,22 +561,45 @@ def train_doctor_from_data(payload: TrainFromDataRequest, background_tasks: Back
             model_name = payload.model or "gemini/gemini-3-pro-preview"
 
             print(f"[DEBUG] Loading {payload.num_cases} cases from data files...")
-            cases = load_training_cases(
-                num_cases=payload.num_cases,
-                model=model_name
-            )
+            try:
+                cases = load_training_cases(
+                    num_cases=payload.num_cases,
+                    model=model_name
+                )
+            except Exception as e:
+                 _JOBS[job_id]["status"] = "error"
+                 _JOBS[job_id]["error"] = f"Failed to load cases: {e}"
+                 return
+
             print(f"[DEBUG] Loaded {len(cases)} cases")
+            
+            # Recalculate total based on actually loaded cases
+            total_tasks = len(cases) * payload.iterations
+            _JOBS[job_id]["progress"]["total"] = total_tasks
+
+            def _progress_callback(stats: BatchProgress):
+                # Update shared state
+                _JOBS[job_id]["progress"].update({
+                    "completed": stats.completed,
+                    "total": stats.total,
+                    "successful": stats.successful,
+                    "failed": stats.failed,
+                    "avg_score": stats.avg_score,
+                })
+                if stats.last_error:
+                    # We store the last error but don't fail the job entirely unless everything fails
+                    pass 
 
             print(f"[DEBUG] Starting training rollouts with {payload.iterations} iterations...")
             run_training_rollouts(
                 cases=cases,
                 model_name=model_name,
                 num_rollouts=payload.iterations,
+                progress_callback=_progress_callback
             )
 
             print(f"[DEBUG] Training complete!")
             _JOBS[job_id]["status"] = "complete"
-            _JOBS[job_id]["progress"]["percent"] = 100
 
         except Exception as e:
             import traceback
@@ -549,6 +611,24 @@ def train_doctor_from_data(payload: TrainFromDataRequest, background_tasks: Back
     background_tasks.add_task(_run_task)
 
     return TrainDoctorResponse(job_id=job_id, status="started")
+
+
+@app.get("/api/train/doctor/progress/{job_id}", response_model=TrainProgressResponse)
+def get_training_progress(job_id: str) -> TrainProgressResponse:
+    job = _JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    
+    prog = job.get("progress", {})
+    return TrainProgressResponse(
+        status=job.get("status", "unknown"),
+        completed=prog.get("completed", 0),
+        total=prog.get("total", 0),
+        successful=prog.get("successful", 0),
+        failed=prog.get("failed", 0),
+        avg_score=prog.get("avg_score", 0.0),
+        message=job.get("error")
+    )
 
 
 # --- GEPA optimization endpoint ------------------------------------------------

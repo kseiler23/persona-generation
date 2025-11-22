@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import datetime
+import threading
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import dspy
 
@@ -26,6 +29,9 @@ from .doctor_critique import DoctorCritiqueAgent
 TRACE_LOG_DIR = Path("data/traces")
 TRACE_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Lock for thread-safe file writing
+_LOG_LOCK = threading.Lock()
+
 def log_trace_for_grpo(
     trace: SimulationTrace, 
     reward: DoctorCritiqueResult, 
@@ -33,6 +39,7 @@ def log_trace_for_grpo(
 ) -> None:
     """
     Append the simulation trace to a JSONL file for future training.
+    Thread-safe.
     """
     log_entry = {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -49,11 +56,29 @@ def log_trace_for_grpo(
     }
     
     filename = f"doctor_traces_{datetime.date.today()}.jsonl"
-    with open(TRACE_LOG_DIR / filename, "a") as f:
-        f.write(json.dumps(log_entry) + "\n")
+    with _LOG_LOCK:
+        with open(TRACE_LOG_DIR / filename, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
 
 
-# --- DSPy Components ---
+# --- Data Classes ---
+
+@dataclass
+class DoctorTrainingCase:
+    case_id: str
+    patient_profile: PatientProfile
+    blp: BehavioralLinguisticProfile
+
+@dataclass
+class BatchProgress:
+    completed: int = 0
+    total: int = 0
+    successful: int = 0
+    failed: int = 0
+    avg_score: float = 0.0
+    last_error: Optional[str] = None
+
+# --- DSPy Components (Kept for future optimization features) ---
 
 class DoctorSignature(dspy.Signature):
     """
@@ -236,54 +261,103 @@ def optimize_doctor_agent(
         # Fallback: Just run once to generate traces
         pass
 
+# --- Parallel Training Runner ---
 
-# --- Simplified Trainer (Non-DSPy Optimizer for now, just Runner) ---
+def run_single_rollout(
+    case: DoctorTrainingCase,
+    model_name: str,
+    max_turns: int = 10
+) -> Tuple[Optional[SimulationTrace], Optional[DoctorCritiqueResult]]:
+    """
+    Run a single simulation and critique. Returns None if failed.
+    """
+    try:
+        doc_agent = SimulatedDoctorAgent(model=model_name)
+        pat_agent = SimulatedPatientAgent(
+            blp=case.blp, 
+            patient_profile=case.patient_profile,
+            model=model_name
+        )
+        controller = SimulationController()
+        judge = DoctorCritiqueAgent(model=model_name)
+
+        trace = controller.run_simulation(
+            doctor_agent=doc_agent,
+            patient_agent=pat_agent,
+            case_id=case.case_id,
+            ground_truth_diagnosis=case.patient_profile.primary_diagnoses,
+            max_turns=max_turns
+        )
+        
+        reward = judge.critique(trace, case.patient_profile)
+        
+        # Log immediately upon completion
+        log_trace_for_grpo(trace, reward, doc_agent.system_prompt)
+        
+        return trace, reward
+    except Exception as e:
+        print(f"[ERROR] Rollout failed for case {case.case_id}: {e}")
+        traceback.print_exc()
+        return None, None
+
 
 def run_training_rollouts(
     cases: List[DoctorTrainingCase],
     model_name: str,
-    num_rollouts: int = 1
-):
+    num_rollouts: int = 1,
+    max_workers: int = 5,
+    progress_callback: Optional[Any] = None
+) -> List[Tuple[SimulationTrace, DoctorCritiqueResult]]:
     """
-    Runs simulations to generate 'Golden Traces'.
-    Does not actively optimize the prompt in real-time (too slow for 1-day agent loop),
-    but collects the data needed for offline optimization/training.
+    Runs simulations in parallel to generate 'Golden Traces'.
+    
+    Args:
+        cases: List of cases to simulate.
+        model_name: LLM model to use.
+        num_rollouts: How many times to run EACH case.
+        max_workers: Number of parallel threads.
+        progress_callback: Optional function to report BatchProgress.
     """
-    configure_dspy(model_name) # If we use dspy module
     
-    # If num_rollouts > 1, we trigger the optimization loop
-    if num_rollouts > 1:
-        optimize_doctor_agent(cases, model_name)
-        return [] # Traces are logged internally
-    
-    # Otherwise just run once
-    doc_agent = SimulatedDoctorAgent(model=model_name)
-    controller = SimulationController()
-    judge = DoctorCritiqueAgent(model=model_name)
-    
-    results = []
-    
+    # Expand the task list: (case, iteration_index)
+    tasks = []
     for i in range(num_rollouts):
         for case in cases:
-            print(f"Running Case {case.case_id} (Rollout {i+1}/{num_rollouts})...")
+            tasks.append(case)
             
-            pat_agent = SimulatedPatientAgent(
-                blp=case.blp, 
-                patient_profile=case.patient_profile,
-                model=model_name
-            )
+    total_tasks = len(tasks)
+    results = []
+    
+    # Initialize stats
+    stats = BatchProgress(total=total_tasks)
+    scores = []
+
+    print(f"[INFO] Starting batch generation: {total_tasks} simulations with {max_workers} workers.")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_case = {
+            executor.submit(run_single_rollout, case, model_name): case 
+            for case in tasks
+        }
+        
+        for future in as_completed(future_to_case):
+            stats.completed += 1
+            trace, reward = future.result()
             
-            trace = controller.run_simulation(
-                doctor_agent=doc_agent,
-                patient_agent=pat_agent,
-                case_id=case.case_id,
-                ground_truth_diagnosis=case.patient_profile.primary_diagnoses,
-                max_turns=10
-            )
+            if trace and reward:
+                stats.successful += 1
+                results.append((trace, reward))
+                scores.append(reward.overall_score)
+                stats.avg_score = sum(scores) / len(scores)
+            else:
+                stats.failed += 1
+                stats.last_error = "Simulation failed (check logs)"
             
-            reward = judge.critique(trace, case.patient_profile)
-            
-            log_trace_for_grpo(trace, reward, doc_agent.system_prompt)
-            results.append((trace, reward))
-            
+            # Report progress
+            if progress_callback:
+                progress_callback(stats)
+                
+            print(f"[PROGRESS] {stats.completed}/{total_tasks} - Avg Score: {stats.avg_score:.2f}")
+
     return results

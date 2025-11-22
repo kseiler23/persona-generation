@@ -89,6 +89,15 @@ const App: React.FC = () => {
   const [doctorCritique, setDoctorCritique] = useState<DoctorCritiqueResult | null>(null);
   const [busyTraining, setBusyTraining] = useState(false);
   const [trainingJobId, setTrainingJobId] = useState<string | null>(null);
+  const [trainingProgress, setTrainingProgress] = useState<{
+    completed: number;
+    total: number;
+    successful: number;
+    failed: number;
+    avg_score: number;
+    status: string;
+    message?: string;
+  } | null>(null);
 
   const [optimizeJobId, setOptimizeJobId] = useState<string | null>(null);
   const [optimizePercent, setOptimizePercent] = useState<number>(0);
@@ -582,12 +591,53 @@ const App: React.FC = () => {
     }
   };
 
+  const pollTrainingJob = async (jobId: string) => {
+    setTrainingJobId(jobId);
+    setTrainingProgress({
+        completed: 0,
+        total: 100, // placeholder until first poll
+        successful: 0,
+        failed: 0,
+        avg_score: 0,
+        status: "running"
+    });
+
+    const id = window.setInterval(async () => {
+        try {
+            const res = await fetch(`${API_BASE}/api/train/doctor/progress/${encodeURIComponent(jobId)}`);
+            if (!res.ok) {
+                if (res.status === 404) {
+                    window.clearInterval(id);
+                    setBusyTraining(false);
+                    setError("Training job lost.");
+                }
+                return;
+            }
+            const data = await res.json();
+            setTrainingProgress(data);
+
+            if (data.status === "complete" || data.status === "error") {
+                window.clearInterval(id);
+                setBusyTraining(false);
+                if (data.status === "error") {
+                    setError(`Training failed: ${data.message}`);
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }, 1000);
+  };
+
   const handleTrainDoctor = async () => {
     if (!blpObj || !patientObj) {
       setError("You need a BLP and Patient Profile first.");
       return;
     }
     setBusyTraining(true);
+    setTrainingProgress(null);
+    setError(null);
+    
     try {
         const res = await fetch(`${API_BASE}/api/train/doctor`, {
             method: "POST",
@@ -595,23 +645,25 @@ const App: React.FC = () => {
             body: JSON.stringify({
                 blp: blpObj,
                 patient_profile: patientObj,
-                iterations: 3,
+                iterations: 5, // Increased default for demo
                 case_id: patientObj.id || "manual_case",
                 api_key: apiKey || undefined,
             }),
         });
+        if (!res.ok) throw new Error("Failed to start training");
         const data = await res.json();
-        setTrainingJobId(data.job_id);
-        alert("Training job started! Check server logs for JSONL trace output.");
+        pollTrainingJob(data.job_id);
     } catch(e) {
         setError("Failed to start training");
-    } finally {
         setBusyTraining(false);
     }
   };
 
   const handleTrainFromData = async () => {
     setBusyTraining(true);
+    setTrainingProgress(null);
+    setError(null);
+
     try {
         const res = await fetch(`${API_BASE}/api/train/doctor/from-data`, {
             method: "POST",
@@ -622,12 +674,11 @@ const App: React.FC = () => {
                 api_key: apiKey || undefined,
             }),
         });
+        if (!res.ok) throw new Error("Failed to start data training");
         const data = await res.json();
-        setTrainingJobId(data.job_id);
-        alert("Training from data files started! Loading 10 cases from parquet + transcripts.");
+        pollTrainingJob(data.job_id);
     } catch(e) {
         setError("Failed to start data training");
-    } finally {
         setBusyTraining(false);
     }
   };
@@ -1208,9 +1259,40 @@ const App: React.FC = () => {
                           onClick={handleTrainFromData}
                           disabled={busyTraining}
                       >
-                          {busyTraining ? "Job Queued..." : "Train from Data Files"}
+                          {busyTraining ? "Job Running..." : "Train from Data Files"}
                       </button>
                   </div>
+                  
+                  {trainingProgress && (
+                      <div style={{ marginTop: "1rem", background: "rgba(255,255,255,0.05)", padding: "1rem", borderRadius: "8px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem", fontSize: "0.9rem" }}>
+                              <span>Status: <strong>{trainingProgress.status}</strong></span>
+                              <span>Avg Reward: <strong>{(trainingProgress.avg_score * 100).toFixed(1)}%</strong></span>
+                          </div>
+                          
+                          <div className="progress" style={{ height: "8px", background: "#334155" }}>
+                            <div
+                                className="progress-bar"
+                                style={{ 
+                                    width: `${Math.min(100, Math.max(0, (trainingProgress.completed / (trainingProgress.total || 1)) * 100))}%`,
+                                    background: trainingProgress.status === "error" ? "#ef4444" : "#10b981"
+                                }}
+                            />
+                          </div>
+                          
+                          <div style={{ display: "flex", gap: "1rem", marginTop: "0.5rem", fontSize: "0.8rem", color: "#94a3b8" }}>
+                              <span>Completed: {trainingProgress.completed}/{trainingProgress.total}</span>
+                              <span style={{ color: "#10b981" }}>Success: {trainingProgress.successful}</span>
+                              <span style={{ color: "#ef4444" }}>Failed: {trainingProgress.failed}</span>
+                          </div>
+                          {trainingProgress.message && (
+                              <div style={{ marginTop: "0.5rem", color: "#ef4444", fontSize: "0.85rem" }}>
+                                  Error: {trainingProgress.message}
+                              </div>
+                          )}
+                      </div>
+                  )}
+
                   <p style={{ fontSize: '0.85rem', marginTop: '0.5rem', color: '#666' }}>
                       "Train from Data Files" loads 10 cases from data/clinical_cases/cases.parquet and data/transcripts/
                   </p>
